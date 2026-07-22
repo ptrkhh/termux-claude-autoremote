@@ -59,11 +59,17 @@ Under the hood the app resolves the shared file's real folder and calls
    ```sh
    mkdir -p ~/.termux
    printf 'allow-external-apps=true\n' >> ~/.termux/termux.properties
-   termux-reload-settings
    ```
 
-4. The first time you use it, grant the app Termux's **Run commands** permission
-   when prompted.
+   Then **fully close and reopen Termux** (swipe it away from Recents, or use
+   *Exit* from its notification). `termux-reload-settings` alone does not always
+   pick up `allow-external-apps`.
+
+4. Open the **Open Claude Code Here** app and tap **Grant Termux "Run commands"
+   permission**. This runtime permission is *not* granted just by installing the
+   app — Android must show you the grant dialog once. The app's home screen shows
+   ✓/✗ so you can confirm it stuck. (You can also grant it on first share, but
+   granting it here up front is the most reliable.)
 
 Building it yourself needs only the Android SDK: `cd android && ./gradlew assembleDebug`.
 

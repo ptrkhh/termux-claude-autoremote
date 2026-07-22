@@ -5,6 +5,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -28,6 +29,14 @@ public class ShareActivity extends Activity {
     private static final String TERMUX_PACKAGE = "com.termux";
     private static final String RUN_COMMAND_SERVICE = "com.termux.app.RunCommandService";
     private static final String ACTION_RUN_COMMAND = "com.termux.RUN_COMMAND";
+
+    // Termux declares RUN_COMMAND as a *dangerous* (runtime) permission, so it is
+    // never granted just by being listed in the manifest — it must be requested.
+    static final String PERM_RUN_COMMAND = "com.termux.permission.RUN_COMMAND";
+    private static final int REQ_RUN_COMMAND = 1;
+
+    // Resolved between onCreate and the permission callback.
+    private String pendingDir;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -54,8 +63,31 @@ public class ShareActivity extends Activity {
             return;
         }
 
-        launchClaude(dir.getAbsolutePath());
+        pendingDir = dir.getAbsolutePath();
+
+        // Ask for Termux's Run-commands permission the first time; the system
+        // shows the grant dialog over this (invisible) activity.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                && checkSelfPermission(PERM_RUN_COMMAND) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{PERM_RUN_COMMAND}, REQ_RUN_COMMAND);
+            return; // continue in onRequestPermissionsResult
+        }
+
+        launchClaude(pendingDir);
         finish();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (requestCode == REQ_RUN_COMMAND) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                launchClaude(pendingDir);
+            } else {
+                fail("This app needs Termux's “Run commands” permission.\n"
+                        + "Grant it in Settings → Apps → Open Claude Code Here → Permissions, then share again.", null);
+            }
+            finish();
+        }
     }
 
     /** Pulls the first usable content/file Uri out of a SEND or SEND_MULTIPLE intent. */
@@ -109,7 +141,9 @@ public class ShareActivity extends Activity {
             }
             Toast.makeText(this, "Claude → " + new File(dir).getName(), Toast.LENGTH_SHORT).show();
         } catch (SecurityException e) {
-            fail("Termux refused the command.\nEnable `allow-external-apps=true` in ~/.termux/termux.properties, then run `termux-reload-settings`.", null);
+            // Permission is granted by this point, so this is Termux's own gate:
+            // allow-external-apps, and it only takes effect after a full restart.
+            fail("Termux refused the command.\nSet `allow-external-apps=true` in ~/.termux/termux.properties, then FULLY close Termux (swipe it away / Exit from its notification) and reopen it — `termux-reload-settings` alone isn't always enough.", null);
         } catch (Exception e) {
             fail("Couldn't reach Termux. Is it installed?", null);
         }
