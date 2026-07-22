@@ -1,0 +1,334 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+CFG="$HOME/.config/claude-launch"
+RECENTS="$CFG/recents"
+LAST="$CFG/last"
+CAP=15
+# resume picker: hide trivial/unresumable sessions with fewer than this many
+# assistant turns in their transcript — kills /login-only, one-liners, aborted,
+# and "no conversation found" shells. ponytail: bump if real short sessions hide.
+MIN_TURNS=3
+MODELS="opus,sonnet,haiku,fable"
+EFFORTS="low,medium,high,xhigh,max"
+# codenames make each Remote Control session easy to spot in the app
+ANIMALS=(cat dog fox owl bear wolf lion tiger panda koala otter seal hawk duck frog deer)
+PINNED=(
+  "$HOME"                    # Termux home
+  "$HOME/git"                # projects
+  "$HOME/storage/shared"     # Android home  (/storage/emulated/0)
+  "$HOME/storage/downloads"  # Android downloads
+)
+
+# ---------- pure helpers (unit-tested via --selftest) ----------
+
+# mru_add NEW CAP   (current list on stdin) -> deduped, capped list on stdout
+mru_add() {
+  awk -v new="$1" -v cap="$2" '
+    function emit(x){ if(!(x in seen) && n<cap){ seen[x]=1; print x; n++ } }
+    BEGIN{ if(new!="") emit(new) }
+    NF{ emit($0) }
+  '
+}
+
+# go_up PATH ROOT -> parent of PATH, never above ROOT
+go_up() {
+  local parent root
+  root="${2%/}"; root="${root:-/}"
+  parent=$(dirname "$1")
+  case "$parent" in
+    "$root"|"$root"/*) printf '%s\n' "$parent" ;;
+    *)                 printf '%s\n' "$root" ;;
+  esac
+}
+
+# list_subdirs PATH -> immediate subdirectory basenames, sorted (dotdirs skipped)
+list_subdirs() (
+  shopt -s nullglob
+  local d
+  for d in "$1"/*/; do d=${d%/}; printf '%s\n' "${d##*/}"; done | sort
+)
+
+# bridge_id SESSION_JSON -> the RC bridgeSessionId ("" if file/field absent).
+# claude writes ~/.claude/sessions/<pid>.json once it registers remote control.
+# Always exits 0 (grep/head can exit nonzero under `set -o pipefail`).
+bridge_id() { grep -oE '"bridgeSessionId":"[^"]+"' "$1" 2>/dev/null | head -1 | cut -d'"' -f4 || true; }
+
+# usable_prompts  (stdin: prompts, one per line) -> "meaningful" prompts, one per
+# line, in order. Drops slash-commands, a small stopword set, and blank lines —
+# the noise that otherwise makes a session summary read "exit / ok / /resume".
+usable_prompts() {
+  awk '
+    function trim(s){ gsub(/^[ \t]+|[ \t]+$/,"",s); return s }
+    BEGIN{ split("continue resume exit usage ok yes no quit y n",a," "); for(i in a) stop[tolower(a[i])]=1 }
+    { t=trim($0); if(t=="") next; if(substr(t,1,1)=="/") next; if(tolower(t) in stop) next; print t }
+  '
+}
+
+# stitch3  (stdin: lines) -> the last 3 lines joined with " · " (no trailing sep).
+# Fewer than 3 lines -> joins whatever there is; 0 lines -> empty string.
+stitch3() {
+  awk '{a[NR]=$0} END{ s=NR>3?NR-2:1; for(i=s;i<=NR;i++) printf "%s%s",(i>s?" · ":""),a[i]; print "" }'
+}
+
+# ---------- selftest ----------
+
+selftest() {
+  local out t
+  out=$(printf 'b\nc\n'    | mru_add a 5); [ "$out" = $'a\nb\nc' ] || { echo "mru_add basic FAIL: [$out]"; exit 1; }
+  out=$(printf 'a\nb\n'    | mru_add a 5); [ "$out" = $'a\nb' ]    || { echo "mru_add dedupe FAIL: [$out]"; exit 1; }
+  out=$(printf 'x\na\ny\n' | mru_add a 5); [ "$out" = $'a\nx\ny' ] || { echo "mru_add reorder FAIL: [$out]"; exit 1; }
+  out=$(printf 'b\nc\nd\n' | mru_add a 2); [ "$out" = $'a\nb' ]    || { echo "mru_add cap FAIL: [$out]"; exit 1; }
+  out=$(go_up /r/a/b /r);  [ "$out" = /r/a ] || { echo "go_up FAIL: [$out]"; exit 1; }
+  out=$(go_up /r/a/b /r/); [ "$out" = /r/a ] || { echo "go_up trailing-slash FAIL: [$out]"; exit 1; }
+  out=$(go_up /r /r);      [ "$out" = /r ]   || { echo "go_up root-clamp FAIL: [$out]"; exit 1; }
+  t=$(mktemp -d); mkdir -p "$t/x" "$t/y" "$t/.hidden" "$t/has space"; touch "$t/f"
+  out=$(list_subdirs "$t" | paste -sd,); rm -rf "$t"
+  [ "$out" = "has space,x,y" ] || { echo "list_subdirs FAIL: [$out]"; exit 1; }
+  t=$(mktemp); printf '{"pid":1,"bridgeSessionId":"session_ABC123","x":2}' >"$t"
+  out=$(bridge_id "$t"); rm -f "$t"
+  [ "$out" = session_ABC123 ]      || { echo "bridge_id FAIL: [$out]"; exit 1; }
+  out=$(bridge_id /no/such/file);  [ -z "$out" ] || { echo "bridge_id missing-file FAIL: [$out]"; exit 1; }
+  out=$(printf '/resume\nsession picker\nlooks right\nok\nconsult ponytail\n' | usable_prompts | stitch3)
+  [ "$out" = "session picker · looks right · consult ponytail" ] || { echo "stitch basic FAIL: [$out]"; exit 1; }
+  out=$(printf 'a\nb\nc\nd\ne\n' | usable_prompts | stitch3)
+  [ "$out" = "c · d · e" ]                                       || { echo "stitch last3 FAIL: [$out]"; exit 1; }
+  out=$(printf '/effort\n  \nEXIT\nYes\nreal work\n' | usable_prompts | stitch3)
+  [ "$out" = "real work" ]                                       || { echo "stitch suppress FAIL: [$out]"; exit 1; }
+  out=$(printf '/resume\nok\nexit\n' | usable_prompts | stitch3)
+  [ -z "$out" ]                                                  || { echo "stitch empty FAIL: [$out]"; exit 1; }
+  echo "selftest OK"
+}
+
+# ---------- dialog helpers (interactive; verified via CLAUDE_LAUNCH_DRYRUN=1) ----------
+# ponytail: termux-dialog -v is a comma-joined list with no escaping, so dir
+# names containing ',' break selection parsing. Rare on Android paths; switch to
+# an indexed dialog if it ever bites.
+
+# sheet TITLE CSV -> selected text on stdout ("" if cancelled)
+sheet() {
+  termux-dialog sheet -t "$1" -v "$2" | jq -r '.text // empty'
+}
+
+# sheet_index TITLE CSV -> 0-based index of the selected row ("" if cancelled).
+# Needed for the resume sheet: row labels are free text (titles/prompts) and are
+# not safe to match by value, so we map the selection back by position instead.
+sheet_index() {
+  termux-dialog sheet -t "$1" -v "$2" | jq -r 'if (.text // "") == "" then empty else (.index|tostring) end'
+}
+
+# list_sessions -> TAB-separated "ms_epoch<TAB>cwd<TAB>session_id", newest first,
+# up to 60 candidates. Source is ~/.claude/history.jsonl, grouped by sessionId.
+# pick_session filters these to the first 20 resumable ones (transcript exists +
+# >= MIN_TURNS assistant turns), so we hand over more than 20 here.
+# ponytail: history.jsonl is rotated/capped by claude (~300 lines), so a very
+# chatty session can push older ones out of this list. Fine for "recent"; fall
+# back to a projects/*/*.jsonl mtime scan only if a wanted session goes missing.
+list_sessions() {
+  [ -f "$HOME/.claude/history.jsonl" ] || return 0
+  jq -rs '
+    group_by(.sessionId)
+    | map({sid:.[0].sessionId, cwd:(map(.project)|last), ts:((map(.timestamp)|max) // 0)})
+    | sort_by(-.ts) | .[0:60][]
+    | [(.ts|tostring), .cwd, .sid] | @tsv
+  ' "$HOME/.claude/history.jsonl"
+}
+
+# pick_session -> on a chosen session sets SID + DIR (caller's locals) and returns.
+# Cancel / no sessions -> exits the whole script cleanly (no launch).
+# Lists up to 20 resumable sessions: the transcript must exist and hold at least
+# MIN_TURNS assistant turns (drops /login-only, one-liners, aborted, and "no
+# conversation found" shells). Each row is 3 lines (folder/branch/date, aiTitle,
+# stitched last-3-prompt summary). Commas are stripped from labels because
+# termux-dialog -v splits rows on commas (the ceiling noted on sheet()).
+pick_session() {
+  local ts cwd sid f title branch prompts summary folder when l1 l2 l3 label idx l kept=0
+  local -a LABELS=() SIDS=() CWDS=()
+  while IFS=$'\t' read -r ts cwd sid; do
+    [ "$kept" -ge 20 ] && break
+    [ -d "$cwd" ] || continue
+    local -a matches=( "$HOME/.claude/projects/"*/"$sid.jsonl" )
+    f="${matches[0]}"; [ -e "$f" ] || continue        # transcript gone -> not resumable
+    [ "$(grep -c '"type":"assistant"' "$f" 2>/dev/null || true)" -ge "$MIN_TURNS" ] || continue
+    title=$(grep -m1 '"type":"ai-title"' "$f" 2>/dev/null | jq -r '.aiTitle // empty' 2>/dev/null || true)
+    branch=$(grep -m1 '"gitBranch":"[^"]' "$f" 2>/dev/null | jq -r '.gitBranch // empty' 2>/dev/null || true)
+    [ "$branch" = HEAD ] && branch=""                 # detached / non-repo -> no useful label
+    prompts=$(jq -r --arg s "$sid" 'select(.sessionId==$s) | (.display // "" | gsub("\n";" "))' "$HOME/.claude/history.jsonl" 2>/dev/null || true)
+    summary=$(printf '%s\n' "$prompts" | usable_prompts | stitch3)
+    [ -n "$title" ] || title=$(printf '%s\n' "$prompts" | usable_prompts | head -1)
+    folder=$(basename "$cwd")
+    when=$(date -d "@$(( ts / 1000 ))" '+%m-%d %H:%M' 2>/dev/null || true)
+    l1="$folder${branch:+ ($branch)}${when:+ · $when}"
+    l2="${title:-(untitled)}"
+    l3="${summary:+  ↳ $summary}"
+    label="$l1"$'\n'"$l2"
+    [ -n "$l3" ] && label="$label"$'\n'"$l3"
+    label="${label//,/;}"
+    LABELS+=("$label"); SIDS+=("$sid"); CWDS+=("$cwd"); kept=$((kept+1))
+  done < <(list_sessions)
+
+  if [ "${#LABELS[@]}" -eq 0 ]; then
+    termux-toast -s "No sessions to resume" 2>/dev/null || true
+    exit 0
+  fi
+  local csv=""
+  for l in "${LABELS[@]}"; do csv="${csv:+$csv,}$l"; done
+  idx=$(sheet_index "Resume session" "$csv")
+  [ -n "$idx" ] || exit 0
+  SID="${SIDS[idx]}"; DIR="${CWDS[idx]}"
+}
+
+# recents_shown -> existing recents not equal to a pinned dir, one per line
+recents_shown() {
+  [ -f "$RECENTS" ] || return 0
+  local line p skip
+  while IFS= read -r line; do
+    [ -d "$line" ] || continue
+    skip=0
+    for p in "${PINNED[@]}"; do
+      if [ "$line" = "$p" ]; then skip=1; break; fi
+    done
+    if [ "$skip" = 0 ]; then printf '%s\n' "$line"; fi
+  done < "$RECENTS"
+}
+
+# prune_recents -> rewrite recents keeping only dirs that still exist
+prune_recents() {
+  [ -f "$RECENTS" ] || return 0
+  local line tmp
+  tmp=$(mktemp)
+  while IFS= read -r line; do
+    if [ -d "$line" ]; then printf '%s\n' "$line"; fi
+  done < "$RECENTS" > "$tmp"
+  mv "$tmp" "$RECENTS"
+}
+
+# browse ROOT -> chosen dir on stdout ("" if cancelled)
+browse() {
+  local root=$1 cur=$1 sel subs csv
+  while true; do
+    subs=$(list_subdirs "$cur")
+    csv="✅ Open here"
+    if [ "$cur" != "$root" ]; then csv="⬆ ..,$csv"; fi
+    if [ -n "$subs" ]; then csv="$csv,$(printf '%s' "$subs" | paste -sd,)"; fi
+    sel=$(sheet "$cur" "$csv")
+    case "$sel" in
+      "")            return 0 ;;
+      "✅ Open here") printf '%s\n' "$cur"; return 0 ;;
+      "⬆ ..")        cur=$(go_up "$cur" "$root") ;;
+      *)             cur="$cur/$sel" ;;
+    esac
+  done
+}
+
+# pick_dir -> sets DIR; may set MODEL/EFFORT and REPEAT=1 (uses caller's locals)
+pick_dir() {
+  local csv="🔁 Resume session…" sel p recents_list
+  if [ -s "$LAST" ]; then csv="$csv,⚡ Repeat last"; fi
+  prune_recents
+  recents_list=$(recents_shown)
+  if [ -n "$recents_list" ]; then csv="${csv:+$csv,}$(printf '%s' "$recents_list" | paste -sd,)"; fi
+  for p in "${PINNED[@]}"; do csv="${csv:+$csv,}$p"; done
+  csv="${csv:+$csv,}📁 Browse Termux,📱 Browse Android"
+
+  sel=$(sheet "Working directory" "$csv")
+  case "$sel" in
+    "")                exit 0 ;;
+    "🔁 Resume session…") pick_session; return ;;
+    "⚡ Repeat last")   IFS='|' read -r DIR MODEL EFFORT < "$LAST" || DIR=""; [ -d "$DIR" ] || DIR=""; REPEAT=1 ;;
+    "📁 Browse Termux") DIR=$(browse "$HOME") ;;
+    "📱 Browse Android") DIR=$(browse "$HOME/storage/shared") ;;
+    *)                 DIR="$sel" ;;
+  esac
+  if [ -z "$DIR" ]; then exit 0; fi   # browse cancelled
+}
+
+pick_model()  { MODEL=$(sheet "Model" "$MODELS");   if [ -z "$MODEL" ];  then exit 0; fi; }
+pick_effort() { EFFORT=$(sheet "Effort" "$EFFORTS"); if [ -z "$EFFORT" ]; then exit 0; fi; }
+
+# save_state -> update recents (MRU, capped) and last
+save_state() {
+  mkdir -p "$CFG"
+  local cur=""
+  [ -f "$RECENTS" ] && cur=$(cat "$RECENTS")
+  printf '%s\n' "$cur" | mru_add "$DIR" "$CAP" > "$RECENTS.tmp"
+  mv "$RECENTS.tmp" "$RECENTS"
+  printf '%s|%s|%s\n' "$DIR" "$MODEL" "$EFFORT" > "$LAST.tmp"
+  mv "$LAST.tmp" "$LAST"
+}
+
+# trust_dir DIR -> mark DIR as trusted in ~/.claude.json so claude skips the
+# folder-trust dialog on startup (--dangerously-skip-permissions does NOT cover
+# it). That dialog otherwise blocks the remote-control banner until tapped.
+trust_dir() {
+  local cfg="$HOME/.claude.json" tmp
+  [ -f "$cfg" ] || printf '{}' > "$cfg"
+  tmp=$(mktemp)
+  if jq --arg d "$1" '.projects[$d].hasTrustDialogAccepted = true' "$cfg" > "$tmp"; then
+    mv "$tmp" "$cfg"
+  else
+    rm -f "$tmp"   # leave cfg untouched on jq error; dialog is a survivable fallback
+  fi
+}
+
+# require_api -> fail fast if Termux:API isn't responding. The termux-api CLI
+# hangs forever broadcasting to a missing/broken app (looks like "nothing
+# happens"), so probe with a timeout instead of trusting package presence.
+require_api() {
+  timeout 3 termux-battery-status >/dev/null 2>&1 && return 0
+  echo "Termux:API not responding — install/reinstall the Termux:API app" >&2
+  echo "(same source as Termux; the 'termux-api' CLI package alone is not enough)." >&2
+  exit 1
+}
+
+main() {
+  require_api
+  local DIR="" MODEL="" EFFORT="" REPEAT=0 SID=""
+  pick_dir
+  if [ -z "$SID" ]; then          # resume carries its own model/effort + writes no state
+    [ "$REPEAT" = 0 ] && { pick_model; pick_effort; }
+    save_state
+  fi
+  # ponytail: folder + HH:MM + animal codename makes each session easy to spot;
+  # collides only if two same-minute launches draw the same animal (~1/16).
+  local rc_name="$(basename "$DIR") $(date +%H:%M) ${ANIMALS[RANDOM % ${#ANIMALS[@]}]}"
+  local cmd
+  if [ -n "$SID" ]; then
+    cmd=(claude --resume "$SID" --dangerously-skip-permissions --remote-control "$rc_name")
+  else
+    cmd=(claude --model "$MODEL" --effort "$EFFORT" --dangerously-skip-permissions --remote-control "$rc_name")
+  fi
+  if [ -n "${CLAUDE_LAUNCH_DRYRUN:-}" ]; then
+    printf 'cd %q && %s\n' "$DIR" "${cmd[*]}"
+    exit 0
+  fi
+  trust_dir "$DIR"
+  cd "$DIR"
+  termux-toast -s "Claude '$rc_name' — open under Code sessions in the app" 2>/dev/null || true
+  # claude records its RC session at ~/.claude/sessions/<pid>.json once it
+  # registers; a background watcher reads bridgeSessionId there and deep-links
+  # into the app — `am start -d` cold-starts the app AND opens the exact thread.
+  # We exec claude so its pid == our shell pid ($$), naming the file. If the id
+  # never appears (~30s), the toast names the session as a backstop.
+  # ponytail: no app pre-boot — `monkey`/activity-launch don't work under
+  # Termux, and the deep-link launches the app itself. Bump the wait if the RC
+  # handshake ever runs longer than 30s.
+  local sf="$HOME/.claude/sessions/$$.json"
+  (
+    bid=""
+    for _ in $(seq 1 60); do
+      bid=$(bridge_id "$sf")
+      if [ -n "$bid" ]; then
+        am start -a android.intent.action.VIEW -d "https://claude.ai/code/$bid" >/dev/null 2>&1 || true
+        break
+      fi
+      sleep 0.5
+    done
+  ) &
+  exec "${cmd[@]}"
+}
+
+case "${1:-}" in
+  --selftest) selftest ;;
+  *)          main ;;
+esac

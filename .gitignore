@@ -1,0 +1,17 @@
+# Local editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Runtime output
+*.log
+tmp/
+
+# Local Claude and Termux state
+.claude/
+.termux/
+
+# Local planning notes
+docs/
