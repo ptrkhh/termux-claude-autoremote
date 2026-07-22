@@ -8,6 +8,7 @@
 # Runtime output
 *.log
 tmp/
+/install.sh
 
 # Local Claude and Termux state
 .claude/
