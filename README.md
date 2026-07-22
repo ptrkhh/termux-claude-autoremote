@@ -20,12 +20,10 @@ be resumed without using the terminal's interactive `claude --resume` picker.
 In Termux:
 
 ```sh
-git clone https://github.com/ptrkhh/termux-claude-autoremote.git ~/git/termux-claude-autoremote
-mkdir -p ~/bin ~/.shortcuts
-cp ~/git/termux-claude-autoremote/bin/claude-launch ~/bin/
-cp ~/git/termux-claude-autoremote/shortcuts-Claude ~/.shortcuts/Claude
-chmod +x ~/bin/claude-launch ~/.shortcuts/Claude
+curl -fsSL https://github.com/ptrkhh/termux-claude-autoremote/releases/latest/download/install.sh | bash
 ```
+
+This writes `~/bin/claude-launch` and `~/.shortcuts/Claude`.
 
 Place the **Claude** shortcut from Termux:Widget on the Android homescreen.
 
