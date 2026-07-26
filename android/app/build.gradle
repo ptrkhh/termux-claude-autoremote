@@ -1,0 +1,30 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "com.ptrkhh.openclaudehere"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.ptrkhh.openclaudehere"
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    // The debug build is what gets sideloaded — signed with the standard debug
+    // key so it installs without any signing setup. No release signing config
+    // is needed for a personal share-target helper.
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

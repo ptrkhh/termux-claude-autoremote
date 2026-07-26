@@ -283,8 +283,18 @@ require_api() {
 
 main() {
   require_api
-  local DIR="" MODEL="" EFFORT="" REPEAT=0 SID=""
-  pick_dir
+  # PRESET_DIR (set by `--dir`, e.g. from the "Open Claude Code here" share
+  # target) skips the working-directory picker and starts in that folder.
+  local DIR="${PRESET_DIR:-}" MODEL="" EFFORT="" REPEAT=0 SID=""
+  if [ -n "$DIR" ]; then
+    if [ ! -d "$DIR" ]; then
+      termux-toast -s "Folder not found — $DIR" 2>/dev/null || true
+      echo "claude-launch: not a directory: $DIR" >&2
+      exit 1
+    fi
+  else
+    pick_dir
+  fi
   if [ -z "$SID" ]; then          # resume carries its own model/effort + writes no state
     [ "$REPEAT" = 0 ] && { pick_model; pick_effort; }
     save_state
@@ -330,5 +340,14 @@ main() {
 
 case "${1:-}" in
   --selftest) selftest ;;
+  --dir)
+    shift
+    PRESET_DIR="${1:-}"
+    if [ -z "$PRESET_DIR" ]; then
+      echo "claude-launch: --dir requires a path" >&2
+      exit 2
+    fi
+    main
+    ;;
   *)          main ;;
 esac

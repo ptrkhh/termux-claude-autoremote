@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Open Claude Code Here</string>
+    <!-- Shown as the entry label in the Android share sheet. -->
+    <string name="share_label">Open Claude Code here</string>
+</resources>
