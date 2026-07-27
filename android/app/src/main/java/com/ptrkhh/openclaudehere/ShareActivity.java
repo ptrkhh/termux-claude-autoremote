@@ -14,6 +14,8 @@ import android.widget.Toast;
 import java.io.File;
 import java.util.ArrayList;
 
+// Termux plumbing (RUN_COMMAND intent, permission name) lives in Termux.
+
 /**
  * Invisible share-sheet target. Receives a shared file, works out the folder it
  * lives in ("here"), and asks Termux to run {@code ~/bin/claude-launch --dir
@@ -26,13 +28,6 @@ public class ShareActivity extends Activity {
     private static final String CLAUDE_LAUNCH =
             "/data/data/com.termux/files/home/bin/claude-launch";
 
-    private static final String TERMUX_PACKAGE = "com.termux";
-    private static final String RUN_COMMAND_SERVICE = "com.termux.app.RunCommandService";
-    private static final String ACTION_RUN_COMMAND = "com.termux.RUN_COMMAND";
-
-    // Termux declares RUN_COMMAND as a *dangerous* (runtime) permission, so it is
-    // never granted just by being listed in the manifest — it must be requested.
-    static final String PERM_RUN_COMMAND = "com.termux.permission.RUN_COMMAND";
     private static final int REQ_RUN_COMMAND = 1;
 
     // Resolved between onCreate and the permission callback.
@@ -68,8 +63,8 @@ public class ShareActivity extends Activity {
         // Ask for Termux's Run-commands permission the first time; the system
         // shows the grant dialog over this (invisible) activity.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                && checkSelfPermission(PERM_RUN_COMMAND) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{PERM_RUN_COMMAND}, REQ_RUN_COMMAND);
+                && checkSelfPermission(Termux.PERM_RUN_COMMAND) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Termux.PERM_RUN_COMMAND}, REQ_RUN_COMMAND);
             return; // continue in onRequestPermissionsResult
         }
 
@@ -122,23 +117,10 @@ public class ShareActivity extends Activity {
     }
 
     private void launchClaude(String dir) {
-        Intent intent = new Intent();
-        intent.setClassName(TERMUX_PACKAGE, RUN_COMMAND_SERVICE);
-        intent.setAction(ACTION_RUN_COMMAND);
-        intent.putExtra("com.termux.RUN_COMMAND_PATH", CLAUDE_LAUNCH);
-        intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", new String[]{"--dir", dir});
-        intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", dir);
-        // false -> Termux opens a terminal session in the foreground, which the
-        // interactive Claude Code process needs.
-        intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", false);
-        intent.putExtra("com.termux.RUN_COMMAND_SESSION_ACTION", "0");
-
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent);
-            } else {
-                startService(intent);
-            }
+            // false -> Termux opens a foreground terminal session, which the
+            // interactive Claude Code process needs.
+            Termux.runCommand(this, CLAUDE_LAUNCH, new String[]{"--dir", dir}, dir, false);
             Toast.makeText(this, "Claude → " + new File(dir).getName(), Toast.LENGTH_SHORT).show();
         } catch (SecurityException e) {
             // Permission is granted by this point, so this is Termux's own gate:

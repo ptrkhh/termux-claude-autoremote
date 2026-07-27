@@ -2,9 +2,48 @@ plugins {
     id "com.android.application"
 }
 
+// The launcher installer is generated from scripts/build-installer.sh — the
+// single source of truth for the install logic — and bundled as an asset so the
+// in-app "Install Launcher" button can shell it into Termux. Regenerated on
+// every build (and skipped when its inputs are unchanged), so the APK's
+// installer never drifts from the one shipped as a release asset.
+def installerAssetsDir = layout.buildDirectory.dir("generated/installerAssets")
+def buildInstallerScript = file("$rootDir/../scripts/build-installer.sh")
+
+def generateInstaller = tasks.register("generateInstaller") {
+    description = "Generate the Termux install.sh asset from scripts/build-installer.sh."
+    inputs.file buildInstallerScript
+    inputs.file file("$rootDir/../bin/claude-launch")
+    inputs.file file("$rootDir/../shortcuts-Claude")
+    outputs.dir installerAssetsDir
+    doLast {
+        def outDir = installerAssetsDir.get().asFile
+        outDir.mkdirs()
+        new File(outDir, "install.sh").withOutputStream { os ->
+            project.exec {
+                commandLine "bash", buildInstallerScript.absolutePath
+                standardOutput = os
+            }
+        }
+    }
+}
+
+// Make asset merging wait for the generated installer, on top of the preBuild
+// anchor, so a clean build never merges before the asset exists.
+tasks.named("preBuild") { dependsOn(generateInstaller) }
+tasks.matching { it.name ==~ /merge.*Assets/ }.configureEach { dependsOn(generateInstaller) }
+
 android {
     namespace "com.ptrkhh.openclaudehere"
     compileSdk 34
+
+    sourceSets {
+        main {
+            // Resolved File (not the Provider) so every AGP source-set path
+            // accepts it; the generateInstaller wiring above keeps it populated.
+            assets.srcDir(installerAssetsDir.get().asFile)
+        }
+    }
 
     defaultConfig {
         applicationId "com.ptrkhh.openclaudehere"

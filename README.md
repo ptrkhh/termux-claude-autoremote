@@ -34,6 +34,12 @@ Tap the shortcut, then either:
 - start a new session by selecting a directory, model, and effort; or
 - choose **Resume session…** to reopen a recent Claude conversation.
 
+The working-directory sheet also has a **⚙️ Remote: on/off** entry that flips
+Remote Control and re-shows the sheet. With it **off**, sessions start as plain
+local `claude` — no `--remote-control` flag and no deep-link into the app — which
+is handy for quick terminal-only work. The choice is remembered (default **on**)
+and is also honored by the share target.
+
 The launcher remembers recently used directories and the last new-session
 selection. Use `~/bin/claude-launch --selftest` to run its built-in checks.
 
@@ -71,7 +77,16 @@ Under the hood the app resolves the shared file's real folder and calls
    ✓/✗ so you can confirm it stuck. (You can also grant it on first share, but
    granting it here up front is the most reliable.)
 
-Building it yourself needs only the Android SDK: `cd android && ./gradlew assembleDebug`.
+5. Tap **Install Launcher into Termux**. This writes `~/bin/claude-launch` and
+   `~/.shortcuts/Claude` into Termux for you — the same thing the `install.sh`
+   one-liner above does, so you don't need the terminal at all. A Termux session
+   opens briefly and prints a confirmation. (Android apps can't run code at
+   install time, so this button shells the bundled installer into Termux through
+   the same `RUN_COMMAND` permission the share target uses.)
+
+Building the APK yourself needs the Android SDK plus `bash` on `PATH` (the build
+generates the bundled installer from `scripts/build-installer.sh`):
+`cd android && ./gradlew assembleDebug`.
 
 ### File-explorer compatibility
 

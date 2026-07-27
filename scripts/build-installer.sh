@@ -18,4 +18,5 @@ mkdir -p "\$HOME/bin" "\$HOME/.shortcuts"
 printf '%s' '$launcher' | base64 -d > "\$HOME/bin/claude-launch"
 printf '%s' '$shortcut' | base64 -d > "\$HOME/.shortcuts/Claude"
 chmod +x "\$HOME/bin/claude-launch" "\$HOME/.shortcuts/Claude"
+echo "Installed claude-launch to ~/bin and the Claude shortcut to ~/.shortcuts."
 INSTALLER

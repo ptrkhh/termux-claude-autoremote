@@ -4,6 +4,11 @@ on:
   push:
     paths:
       - "android/**"
+      # The APK bundles the generated installer, which embeds these — rebuild
+      # when they change so the bundled installer never goes stale.
+      - "bin/claude-launch"
+      - "shortcuts-Claude"
+      - "scripts/build-installer.sh"
       - ".github/workflows/android.yml"
   workflow_dispatch:
   release:
@@ -30,6 +35,12 @@ jobs:
       - name: Install SDK packages
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
+      # Single source of truth for the install logic. The generated install.sh is
+      # both the standalone release asset (curl | bash) and what the Gradle build
+      # bundles into the APK for the in-app "Install Launcher" button.
+      - name: Generate installer script
+        run: bash scripts/build-installer.sh > install.sh
+
       - name: Build debug APK
         working-directory: android
         run: ./gradlew --no-daemon assembleDebug
@@ -43,10 +54,18 @@ jobs:
           name: open-claude-code-here-apk
           path: open-claude-code-here.apk
 
-      # When a GitHub release is published, attach the APK so it can be
-      # downloaded directly onto the phone.
-      - name: Attach APK to release
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-sh
+          path: install.sh
+
+      # When a GitHub release is published, attach both the APK and the
+      # standalone installer so they can be downloaded directly onto the phone.
+      - name: Attach assets to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: open-claude-code-here.apk
+          files: |
+            open-claude-code-here.apk
+            install.sh

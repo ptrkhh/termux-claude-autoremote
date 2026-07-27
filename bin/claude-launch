@@ -4,6 +4,7 @@ set -euo pipefail
 CFG="$HOME/.config/claude-launch"
 RECENTS="$CFG/recents"
 LAST="$CFG/last"
+RC="$CFG/rc"        # remote-control on/off toggle (default on when absent)
 CAP=15
 # resume picker: hide trivial/unresumable sessions with fewer than this many
 # assistant turns in their transcript — kills /login-only, one-liners, aborted,
@@ -71,10 +72,27 @@ stitch3() {
   awk '{a[NR]=$0} END{ s=NR>3?NR-2:1; for(i=s;i<=NR;i++) printf "%s%s",(i>s?" · ":""),a[i]; print "" }'
 }
 
+# rc_norm STATE -> "off" only for exactly "off"; anything else (empty, garbage,
+# unset) normalizes to "on". Keeps the default-on contract robust to a missing
+# or corrupt $CFG/rc.
+rc_norm() { if [ "${1:-}" = off ]; then printf 'off\n'; else printf 'on\n'; fi; }
+
+# rc_flip STATE -> the opposite normalized state.
+rc_flip() { if [ "$(rc_norm "${1:-}")" = on ]; then printf 'off\n'; else printf 'on\n'; fi; }
+
+# rc_label STATE -> the cycling sheet entry text for STATE.
+rc_label() { printf '⚙️ Remote: %s\n' "$(rc_norm "${1:-}")"; }
+
+# rc_read -> current remote-control state ("on"/"off") from $RC, default on.
+rc_read() { rc_norm "$(cat "$RC" 2>/dev/null || true)"; }
+
+# rc_write STATE -> persist normalized STATE to $RC.
+rc_write() { mkdir -p "$(dirname "$RC")"; rc_norm "$1" > "$RC"; }
+
 # ---------- selftest ----------
 
 selftest() {
-  local out t
+  local out t rc_save rc_tmp
   out=$(printf 'b\nc\n'    | mru_add a 5); [ "$out" = $'a\nb\nc' ] || { echo "mru_add basic FAIL: [$out]"; exit 1; }
   out=$(printf 'a\nb\n'    | mru_add a 5); [ "$out" = $'a\nb' ]    || { echo "mru_add dedupe FAIL: [$out]"; exit 1; }
   out=$(printf 'x\na\ny\n' | mru_add a 5); [ "$out" = $'a\nx\ny' ] || { echo "mru_add reorder FAIL: [$out]"; exit 1; }
@@ -97,6 +115,20 @@ selftest() {
   [ "$out" = "real work" ]                                       || { echo "stitch suppress FAIL: [$out]"; exit 1; }
   out=$(printf '/resume\nok\nexit\n' | usable_prompts | stitch3)
   [ -z "$out" ]                                                  || { echo "stitch empty FAIL: [$out]"; exit 1; }
+  out=$(rc_norm on);   [ "$out" = on ]  || { echo "rc_norm on FAIL: [$out]"; exit 1; }
+  out=$(rc_norm off);  [ "$out" = off ] || { echo "rc_norm off FAIL: [$out]"; exit 1; }
+  out=$(rc_norm '');   [ "$out" = on ]  || { echo "rc_norm default FAIL: [$out]"; exit 1; }
+  out=$(rc_norm huh);  [ "$out" = on ]  || { echo "rc_norm garbage FAIL: [$out]"; exit 1; }
+  out=$(rc_flip on);   [ "$out" = off ] || { echo "rc_flip on FAIL: [$out]"; exit 1; }
+  out=$(rc_flip off);  [ "$out" = on ]  || { echo "rc_flip off FAIL: [$out]"; exit 1; }
+  out=$(rc_flip '');   [ "$out" = off ] || { echo "rc_flip default FAIL: [$out]"; exit 1; }
+  out=$(rc_label on);  [ "$out" = "⚙️ Remote: on" ]  || { echo "rc_label on FAIL: [$out]"; exit 1; }
+  out=$(rc_label off); [ "$out" = "⚙️ Remote: off" ] || { echo "rc_label off FAIL: [$out]"; exit 1; }
+  rc_save="$RC"; rc_tmp=$(mktemp -d); RC="$rc_tmp/rc"
+  out=$(rc_read);               [ "$out" = on ]  || { echo "rc_read default FAIL: [$out]"; exit 1; }
+  rc_write off; out=$(rc_read);  [ "$out" = off ] || { echo "rc round-trip off FAIL: [$out]"; exit 1; }
+  rc_write on;  out=$(rc_read);  [ "$out" = on ]  || { echo "rc round-trip on FAIL: [$out]"; exit 1; }
+  rm -rf "$rc_tmp"; RC="$rc_save"
   echo "selftest OK"
 }
 
@@ -221,26 +253,34 @@ browse() {
   done
 }
 
-# pick_dir -> sets DIR; may set MODEL/EFFORT and REPEAT=1 (uses caller's locals)
+# pick_dir -> sets DIR; may set MODEL/EFFORT and REPEAT=1 (uses caller's locals).
+# Loops so the "⚙️ Remote: on|off" entry can flip the persisted toggle and
+# re-show the same sheet without picking a directory.
 pick_dir() {
-  local csv="🔁 Resume session…" sel p recents_list
-  if [ -s "$LAST" ]; then csv="$csv,⚡ Repeat last"; fi
-  prune_recents
-  recents_list=$(recents_shown)
-  if [ -n "$recents_list" ]; then csv="${csv:+$csv,}$(printf '%s' "$recents_list" | paste -sd,)"; fi
-  for p in "${PINNED[@]}"; do csv="${csv:+$csv,}$p"; done
-  csv="${csv:+$csv,}📁 Browse Termux,📱 Browse Android"
+  local csv sel p recents_list rc rc_entry
+  while true; do
+    rc=$(rc_read); rc_entry=$(rc_label "$rc")
+    csv="🔁 Resume session…"
+    if [ -s "$LAST" ]; then csv="$csv,⚡ Repeat last"; fi
+    prune_recents
+    recents_list=$(recents_shown)
+    if [ -n "$recents_list" ]; then csv="${csv:+$csv,}$(printf '%s' "$recents_list" | paste -sd,)"; fi
+    for p in "${PINNED[@]}"; do csv="${csv:+$csv,}$p"; done
+    csv="${csv:+$csv,}📁 Browse Termux,📱 Browse Android,$rc_entry"
 
-  sel=$(sheet "Working directory" "$csv")
-  case "$sel" in
-    "")                exit 0 ;;
-    "🔁 Resume session…") pick_session; return ;;
-    "⚡ Repeat last")   IFS='|' read -r DIR MODEL EFFORT < "$LAST" || DIR=""; [ -d "$DIR" ] || DIR=""; REPEAT=1 ;;
-    "📁 Browse Termux") DIR=$(browse "$HOME") ;;
-    "📱 Browse Android") DIR=$(browse "$HOME/storage/shared") ;;
-    *)                 DIR="$sel" ;;
-  esac
-  if [ -z "$DIR" ]; then exit 0; fi   # browse cancelled
+    sel=$(sheet "Working directory" "$csv")
+    case "$sel" in
+      "")                exit 0 ;;
+      "$rc_entry")       rc_write "$(rc_flip "$rc")"; continue ;;
+      "🔁 Resume session…") pick_session; return ;;
+      "⚡ Repeat last")   IFS='|' read -r DIR MODEL EFFORT < "$LAST" || DIR=""; [ -d "$DIR" ] || DIR=""; REPEAT=1 ;;
+      "📁 Browse Termux") DIR=$(browse "$HOME") ;;
+      "📱 Browse Android") DIR=$(browse "$HOME/storage/shared") ;;
+      *)                 DIR="$sel" ;;
+    esac
+    if [ -z "$DIR" ]; then exit 0; fi   # browse cancelled
+    return
+  done
 }
 
 pick_model()  { MODEL=$(sheet "Model" "$MODELS");   if [ -z "$MODEL" ];  then exit 0; fi; }
@@ -299,22 +339,32 @@ main() {
     [ "$REPEAT" = 0 ] && { pick_model; pick_effort; }
     save_state
   fi
+  # Remote Control on/off is a persisted user toggle ($CFG/rc, default on). When
+  # off we launch a plain local claude — no --remote-control flag and no deep-link
+  # watcher — so nothing registers a bridge session or opens the app. Read once
+  # here so the --dir share-target path (which skips pick_dir) honors it too.
+  local rc; rc=$(rc_read)
   # ponytail: folder + HH:MM + animal codename makes each session easy to spot;
   # collides only if two same-minute launches draw the same animal (~1/16).
   local rc_name="$(basename "$DIR") $(date +%H:%M) ${ANIMALS[RANDOM % ${#ANIMALS[@]}]}"
   local cmd
   if [ -n "$SID" ]; then
-    cmd=(claude --resume "$SID" --dangerously-skip-permissions --remote-control "$rc_name")
+    cmd=(claude --resume "$SID" --dangerously-skip-permissions)
   else
-    cmd=(claude --model "$MODEL" --effort "$EFFORT" --dangerously-skip-permissions --remote-control "$rc_name")
+    cmd=(claude --model "$MODEL" --effort "$EFFORT" --dangerously-skip-permissions)
   fi
+  [ "$rc" = on ] && cmd+=(--remote-control "$rc_name")
   if [ -n "${CLAUDE_LAUNCH_DRYRUN:-}" ]; then
     printf 'cd %q && %s\n' "$DIR" "${cmd[*]}"
     exit 0
   fi
   trust_dir "$DIR"
   cd "$DIR"
-  termux-toast -s "Claude '$rc_name' — open under Code sessions in the app" 2>/dev/null || true
+  if [ "$rc" = on ]; then
+    termux-toast -s "Claude '$rc_name' — open under Code sessions in the app" 2>/dev/null || true
+  else
+    termux-toast -s "Claude starting in $(basename "$DIR") (Remote off)" 2>/dev/null || true
+  fi
   # claude records its RC session at ~/.claude/sessions/<pid>.json once it
   # registers; a background watcher reads bridgeSessionId there and deep-links
   # into the app — `am start -d` cold-starts the app AND opens the exact thread.
@@ -323,18 +373,22 @@ main() {
   # ponytail: no app pre-boot — `monkey`/activity-launch don't work under
   # Termux, and the deep-link launches the app itself. Bump the wait if the RC
   # handshake ever runs longer than 30s.
-  local sf="$HOME/.claude/sessions/$$.json"
-  (
-    bid=""
-    for _ in $(seq 1 60); do
-      bid=$(bridge_id "$sf")
-      if [ -n "$bid" ]; then
-        am start -a android.intent.action.VIEW -d "https://claude.ai/code/$bid" >/dev/null 2>&1 || true
-        break
-      fi
-      sleep 0.5
-    done
-  ) &
+  # Skipped entirely when Remote Control is off — there is no bridge session to
+  # watch for and nothing to open in the app.
+  if [ "$rc" = on ]; then
+    local sf="$HOME/.claude/sessions/$$.json"
+    (
+      bid=""
+      for _ in $(seq 1 60); do
+        bid=$(bridge_id "$sf")
+        if [ -n "$bid" ]; then
+          am start -a android.intent.action.VIEW -d "https://claude.ai/code/$bid" >/dev/null 2>&1 || true
+          break
+        fi
+        sleep 0.5
+      done
+    ) &
+  fi
   exec "${cmd[@]}"
 }
 
