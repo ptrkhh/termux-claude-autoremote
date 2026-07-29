@@ -34,8 +34,8 @@ Tap the shortcut, then either:
 - start a new session by selecting a directory, model, and effort; or
 - choose **Resume session…** to reopen a recent Claude conversation.
 
-The launcher remembers recently used directories and the last new-session
-selection. Use `~/bin/claude-launch --selftest` to run its built-in checks.
+The launcher remembers recently used directories. Use
+`~/bin/claude-launch --selftest` to run its built-in checks.
 
 ### Picker style
 

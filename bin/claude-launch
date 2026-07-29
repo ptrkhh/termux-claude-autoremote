@@ -3,7 +3,6 @@ set -euo pipefail
 
 CFG="$HOME/.config/claude-launch"
 RECENTS="$CFG/recents"
-LAST="$CFG/last"
 CAP=15
 # resume picker: hide trivial/unresumable sessions with fewer than this many
 # assistant turns in their transcript — kills /login-only, one-liners, aborted,
@@ -238,10 +237,9 @@ browse() {
   done
 }
 
-# pick_dir -> sets DIR; may set MODEL/EFFORT and REPEAT=1 (uses caller's locals)
+# pick_dir -> sets DIR (uses caller's locals)
 pick_dir() {
   local csv="🔁 Resume session…" sel p recents_list
-  if [ -s "$LAST" ]; then csv="$csv,⚡ Repeat last"; fi
   prune_recents
   recents_list=$(recents_shown)
   if [ -n "$recents_list" ]; then csv="${csv:+$csv,}$(printf '%s' "$recents_list" | paste -sd,)"; fi
@@ -252,7 +250,6 @@ pick_dir() {
   case "$sel" in
     "")                exit 0 ;;
     "🔁 Resume session…") pick_session; return ;;
-    "⚡ Repeat last")   IFS='|' read -r DIR MODEL EFFORT < "$LAST" || DIR=""; [ -d "$DIR" ] || DIR=""; REPEAT=1 ;;
     "📁 Browse Termux") DIR=$(browse "$HOME") ;;
     "📱 Browse Android") DIR=$(browse "$HOME/storage/shared") ;;
     *)                 DIR="$sel" ;;
@@ -263,15 +260,13 @@ pick_dir() {
 pick_model()  { MODEL=$(menu "Model" "$MODELS");   if [ -z "$MODEL" ];  then exit 0; fi; }
 pick_effort() { EFFORT=$(menu "Effort" "$EFFORTS"); if [ -z "$EFFORT" ]; then exit 0; fi; }
 
-# save_state -> update recents (MRU, capped) and last
+# save_state -> update recents (MRU, capped)
 save_state() {
   mkdir -p "$CFG"
   local cur=""
   [ -f "$RECENTS" ] && cur=$(cat "$RECENTS")
   printf '%s\n' "$cur" | mru_add "$DIR" "$CAP" > "$RECENTS.tmp"
   mv "$RECENTS.tmp" "$RECENTS"
-  printf '%s|%s|%s\n' "$DIR" "$MODEL" "$EFFORT" > "$LAST.tmp"
-  mv "$LAST.tmp" "$LAST"
 }
 
 # trust_dir DIR -> mark DIR as trusted in ~/.claude.json so claude skips the
@@ -302,7 +297,7 @@ main() {
   require_api
   # PRESET_DIR (set by `--dir`, e.g. from the "Open Claude Code here" share
   # target) skips the working-directory picker and starts in that folder.
-  local DIR="${PRESET_DIR:-}" MODEL="" EFFORT="" REPEAT=0 SID=""
+  local DIR="${PRESET_DIR:-}" MODEL="" EFFORT="" SID=""
   if [ -n "$DIR" ]; then
     if [ ! -d "$DIR" ]; then
       termux-toast -s "Folder not found — $DIR" 2>/dev/null || true
@@ -313,7 +308,8 @@ main() {
     pick_dir
   fi
   if [ -z "$SID" ]; then          # resume carries its own model/effort + writes no state
-    [ "$REPEAT" = 0 ] && { pick_model; pick_effort; }
+    pick_model
+    pick_effort
     save_state
   fi
   # ponytail: folder + HH:MM + animal codename makes each session easy to spot;
