@@ -37,6 +37,23 @@ Tap the shortcut, then either:
 The launcher remembers recently used directories and the last new-session
 selection. Use `~/bin/claude-launch --selftest` to run its built-in checks.
 
+### Picker style
+
+Lists are shown with Termux:API's `radio` dialog: a centred dialog that sizes
+itself to its content, so the whole list is visible on the first tap (select a
+row, tap **OK**).
+
+The alternative is `sheet`, which selects with a single tap but is an Android
+bottom sheet. Termux:API never sets its peek height or expanded state, so on
+some devices it opens as a collapsed sliver at the bottom edge showing only the
+first (often clipped) row until you swipe it up. If your device does not do
+that and you prefer the single tap, export the widget you want before launching
+— e.g. in `~/.shortcuts/Claude`:
+
+```sh
+export CLAUDE_LAUNCH_PICKER=sheet   # radio (default) | sheet | spinner
+```
+
 ## Share a file to Claude ("Open Claude Code here")
 
 A tiny companion app (`android/`) adds an **Open Claude Code here** entry to the
