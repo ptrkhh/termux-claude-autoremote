@@ -11,6 +11,19 @@ CAP=15
 MIN_TURNS=3
 MODELS="opus,sonnet,haiku,fable"
 EFFORTS="low,medium,high,xhigh,max"
+# Widget used for every picker. Termux:API's `sheet` is a BottomSheetDialog and
+# it never sets a peek height or asks for the expanded state, so on some devices
+# it opens as a collapsed sliver at the bottom edge — only the first row shows
+# (often clipped) until you swipe it up. `radio` is an ordinary centred
+# AlertDialog that sizes itself to its content and scrolls, so the whole list is
+# on screen from the first tap, at the cost of one extra tap on OK. Set
+# CLAUDE_LAUNCH_PICKER=sheet to get the old one-tap sheet back (or `spinner`).
+PICKER="${CLAUDE_LAUNCH_PICKER:-radio}"
+case "$PICKER" in
+  radio|sheet|spinner) ;;
+  *) echo "claude-launch: unknown CLAUDE_LAUNCH_PICKER '$PICKER' — using radio" >&2
+     PICKER=radio ;;
+esac
 # codenames make each Remote Control session easy to spot in the app
 ANIMALS=(cat dog fox owl bear wolf lion tiger panda koala otter seal hawk duck frog deer)
 PINNED=(
@@ -105,16 +118,20 @@ selftest() {
 # names containing ',' break selection parsing. Rare on Android paths; switch to
 # an indexed dialog if it ever bites.
 
-# sheet TITLE CSV -> selected text on stdout ("" if cancelled)
-sheet() {
-  termux-dialog sheet -t "$1" -v "$2" | jq -r '.text // empty'
+# menu TITLE CSV -> selected text on stdout ("" if cancelled).
+# Cancel/dismiss/back reports code BUTTON_NEGATIVE with an empty .text for every
+# widget type, so "empty result" means cancelled regardless of $PICKER.
+menu() {
+  termux-dialog "$PICKER" -t "$1" -v "$2" | jq -r '.text // empty'
 }
 
-# sheet_index TITLE CSV -> 0-based index of the selected row ("" if cancelled).
-# Needed for the resume sheet: row labels are free text (titles/prompts) and are
+# menu_index TITLE CSV -> 0-based index of the selected row ("" if cancelled).
+# Needed for the resume list: row labels are free text (titles/prompts) and are
 # not safe to match by value, so we map the selection back by position instead.
-sheet_index() {
-  termux-dialog sheet -t "$1" -v "$2" | jq -r 'if (.text // "") == "" then empty else (.index|tostring) end'
+# .index is omitted entirely when nothing was picked, hence the -1 default.
+menu_index() {
+  termux-dialog "$PICKER" -t "$1" -v "$2" \
+    | jq -r 'if (.text // "") == "" or (.index // -1) < 0 then empty else (.index|tostring) end'
 }
 
 # list_sessions -> TAB-separated "ms_epoch<TAB>cwd<TAB>session_id", newest first,
@@ -140,7 +157,7 @@ list_sessions() {
 # MIN_TURNS assistant turns (drops /login-only, one-liners, aborted, and "no
 # conversation found" shells). Each row is 3 lines (folder/branch/date, aiTitle,
 # stitched last-3-prompt summary). Commas are stripped from labels because
-# termux-dialog -v splits rows on commas (the ceiling noted on sheet()).
+# termux-dialog -v splits rows on commas (the ceiling noted on menu()).
 pick_session() {
   local ts cwd sid f title branch prompts summary folder when l1 l2 l3 label idx l kept=0
   local -a LABELS=() SIDS=() CWDS=()
@@ -173,7 +190,7 @@ pick_session() {
   fi
   local csv=""
   for l in "${LABELS[@]}"; do csv="${csv:+$csv,}$l"; done
-  idx=$(sheet_index "Resume session" "$csv")
+  idx=$(menu_index "Resume session" "$csv")
   [ -n "$idx" ] || exit 0
   SID="${SIDS[idx]}"; DIR="${CWDS[idx]}"
 }
@@ -211,7 +228,7 @@ browse() {
     csv="✅ Open here"
     if [ "$cur" != "$root" ]; then csv="⬆ ..,$csv"; fi
     if [ -n "$subs" ]; then csv="$csv,$(printf '%s' "$subs" | paste -sd,)"; fi
-    sel=$(sheet "$cur" "$csv")
+    sel=$(menu "$cur" "$csv")
     case "$sel" in
       "")            return 0 ;;
       "✅ Open here") printf '%s\n' "$cur"; return 0 ;;
@@ -231,7 +248,7 @@ pick_dir() {
   for p in "${PINNED[@]}"; do csv="${csv:+$csv,}$p"; done
   csv="${csv:+$csv,}📁 Browse Termux,📱 Browse Android"
 
-  sel=$(sheet "Working directory" "$csv")
+  sel=$(menu "Working directory" "$csv")
   case "$sel" in
     "")                exit 0 ;;
     "🔁 Resume session…") pick_session; return ;;
@@ -243,8 +260,8 @@ pick_dir() {
   if [ -z "$DIR" ]; then exit 0; fi   # browse cancelled
 }
 
-pick_model()  { MODEL=$(sheet "Model" "$MODELS");   if [ -z "$MODEL" ];  then exit 0; fi; }
-pick_effort() { EFFORT=$(sheet "Effort" "$EFFORTS"); if [ -z "$EFFORT" ]; then exit 0; fi; }
+pick_model()  { MODEL=$(menu "Model" "$MODELS");   if [ -z "$MODEL" ];  then exit 0; fi; }
+pick_effort() { EFFORT=$(menu "Effort" "$EFFORTS"); if [ -z "$EFFORT" ]; then exit 0; fi; }
 
 # save_state -> update recents (MRU, capped) and last
 save_state() {
