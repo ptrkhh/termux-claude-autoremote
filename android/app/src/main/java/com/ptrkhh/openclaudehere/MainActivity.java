@@ -16,6 +16,9 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Setup screen: three steps, each showing its own live status, plus a "Check
  * setup" button that says exactly which one is missing instead of leaving the
@@ -30,18 +33,38 @@ import android.widget.Toast;
 public class MainActivity extends Activity {
 
     private static final int REQ_RUN_COMMAND = 2;
-    private static final String FDROID_TERMUX = "https://f-droid.org/packages/com.termux/";
+
+    /** Display name, package, F-Droid page — for the three apps step 1 needs. */
+    private static final String[][] TERMUX_APPS = {
+            {"Termux", "com.termux", "https://f-droid.org/packages/com.termux/"},
+            {"Termux:API", "com.termux.api", "https://f-droid.org/packages/com.termux.api/"},
+            {"Termux:Widget", "com.termux.widget", "https://f-droid.org/packages/com.termux.widget/"},
+    };
 
     private static final int GREEN = Color.parseColor("#2E7D32");
     private static final int RED = Color.parseColor("#C62828");
     private static final int GREY = Color.parseColor("#666666");
     private static final int INK = Color.parseColor("#222222");
 
-    private TextView termuxStatus;
+    private final List<AppRow> appRows = new ArrayList<>();
     private TextView permStatus;
     private TextView checkResult;
-    private Button getTermux;
     private Button grant;
+
+    /** One installable Termux app: its status line and its "get it" button. */
+    private static final class AppRow {
+        final String label;
+        final String pkg;
+        final TextView status;
+        final Button get;
+
+        AppRow(String label, String pkg, TextView status, Button get) {
+            this.label = label;
+            this.pkg = pkg;
+            this.status = status;
+            this.get = get;
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -60,15 +83,20 @@ public class MainActivity extends Activity {
 
         // ---- Step 1: Termux ----
         root.addView(heading("1  Install Termux"));
-        root.addView(text("Termux, Termux:API and Termux:Widget — all three, all from the "
-                + "same source (F-Droid or GitHub). Mixing sources breaks them.",
+        root.addView(text("All three, all from the same source — mixing F-Droid and GitHub "
+                + "builds breaks the plugins. Each button opens its F-Droid page.",
                 15, GREY, Typeface.NORMAL));
-        termuxStatus = statusLine(root);
-        getTermux = button(root, "Get Termux", new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(FDROID_TERMUX)));
-            }
-        });
+        for (String[] app : TERMUX_APPS) {
+            final String label = app[0];
+            final String url = app[2];
+            TextView status = statusLine(root);
+            Button get = button(root, "Get " + label + " on F-Droid", new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    open(url, label);
+                }
+            });
+            appRows.add(new AppRow(label, app[1], status, get));
+        }
 
         // ---- Step 2: the one command ----
         root.addView(heading("2  Paste this into Termux"));
@@ -156,9 +184,11 @@ public class MainActivity extends Activity {
     }
 
     private void refreshStatus() {
-        boolean termux = Setup.termuxInstalled(this);
-        mark(termuxStatus, termux, "Termux installed", "Termux not found");
-        getTermux.setVisibility(termux ? View.GONE : View.VISIBLE);
+        for (AppRow row : appRows) {
+            boolean installed = Setup.installed(this, row.pkg);
+            mark(row.status, installed, row.label + " installed", row.label + " not found");
+            row.get.setVisibility(installed ? View.GONE : View.VISIBLE);
+        }
 
         boolean granted = Setup.permissionGranted(this);
         mark(permStatus, granted, "Permission granted", "Permission not granted yet");
@@ -189,6 +219,15 @@ public class MainActivity extends Activity {
         }
         checkResult.setTextColor(good ? GREEN : RED);
         checkResult.setText(msg);
+    }
+
+    /** Opens an F-Droid page. A phone with no browser shouldn't crash the screen. */
+    private void open(String url, String label) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (Exception e) {
+            toast("No app can open that link. Search F-Droid for " + label + ".");
+        }
     }
 
     // ---- tiny view helpers ----

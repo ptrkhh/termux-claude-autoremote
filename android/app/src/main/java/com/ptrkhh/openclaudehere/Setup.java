@@ -67,13 +67,22 @@ final class Setup {
     /** Distinct request codes / actions so two in-flight calls can't collide. */
     private static int callSeq = 0;
 
-    static boolean termuxInstalled(Context ctx) {
+    /**
+     * Whether a package is installed. Android 11+ hides packages from this
+     * unless they are listed in the manifest's {@code <queries>} block — the
+     * three Termux apps are.
+     */
+    static boolean installed(Context ctx, String pkg) {
         try {
-            ctx.getPackageManager().getPackageInfo(TERMUX_PACKAGE, 0);
+            ctx.getPackageManager().getPackageInfo(pkg, 0);
             return true;
         } catch (PackageManager.NameNotFoundException e) {
             return false;
         }
+    }
+
+    static boolean termuxInstalled(Context ctx) {
+        return installed(ctx, TERMUX_PACKAGE);
     }
 
     static boolean permissionGranted(Context ctx) {
