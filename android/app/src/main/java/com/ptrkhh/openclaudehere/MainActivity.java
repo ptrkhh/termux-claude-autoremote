@@ -1,12 +1,14 @@
 package com.ptrkhh.openclaudehere;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.Typeface;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.TypedValue;
-import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -15,15 +17,31 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 /**
- * Tiny status/help screen. Not part of the share flow — it gives the app a
- * launcher icon, explains how to use it, and lets you pre-grant Termux's
- * runtime "Run commands" permission before ever sharing a file. Built in code so
- * the app ships no layout XML.
+ * Setup screen: three steps, each showing its own live status, plus a "Check
+ * setup" button that says exactly which one is missing instead of leaving the
+ * user to share a file and guess.
+ *
+ * <p>Step 2 is a copy-paste because it has to be — see {@link Setup} for why
+ * this app can't run its own setup command. "Copy &amp; open Termux" gets it as
+ * close to one tap as Android allows: paste, Enter.
+ *
+ * <p>Built in code so the app ships no layout XML.
  */
 public class MainActivity extends Activity {
 
     private static final int REQ_RUN_COMMAND = 2;
-    private TextView status;
+    private static final String FDROID_TERMUX = "https://f-droid.org/packages/com.termux/";
+
+    private static final int GREEN = Color.parseColor("#2E7D32");
+    private static final int RED = Color.parseColor("#C62828");
+    private static final int GREY = Color.parseColor("#666666");
+    private static final int INK = Color.parseColor("#222222");
+
+    private TextView termuxStatus;
+    private TextView permStatus;
+    private TextView checkResult;
+    private Button getTermux;
+    private Button grant;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -35,40 +53,80 @@ public class MainActivity extends Activity {
         int pad = dp(24);
         root.setPadding(pad, pad, pad, pad);
 
-        TextView tv = new TextView(this);
-        tv.setText(
-                "Open Claude Code Here\n\n" +
-                "Share any file from a file explorer and choose “Open Claude Code here”. " +
-                "Claude Code launches in that file’s folder.\n\n" +
-                "Setup (one time):\n" +
-                "1. Install Termux + the claude-launch script (see the repo README).\n" +
-                "2. In Termux, set allow-external-apps=true in ~/.termux/termux.properties, " +
-                "then FULLY close and reopen Termux.\n" +
-                "3. Grant the “Run commands” permission below.\n\n" +
-                "Then just share a file and pick “Open Claude Code here”.");
-        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        tv.setTextColor(Color.parseColor("#222222"));
-        tv.setGravity(Gravity.START);
-        root.addView(tv);
+        root.addView(text("Open Claude Code Here", 22, INK, Typeface.BOLD));
+        root.addView(text(
+                "Share any file from a file explorer and pick “Open Claude Code here” — "
+                        + "Claude Code starts in that file’s folder.", 15, GREY, Typeface.NORMAL));
 
-        Button grant = new Button(this);
-        grant.setText("Grant Termux “Run commands” permission");
-        grant.setOnClickListener(new View.OnClickListener() {
+        // ---- Step 1: Termux ----
+        root.addView(heading("1  Install Termux"));
+        root.addView(text("Termux, Termux:API and Termux:Widget — all three, all from the "
+                + "same source (F-Droid or GitHub). Mixing sources breaks them.",
+                15, GREY, Typeface.NORMAL));
+        termuxStatus = statusLine(root);
+        getTermux = button(root, "Get Termux", new View.OnClickListener() {
             @Override public void onClick(View v) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    requestPermissions(new String[]{ShareActivity.PERM_RUN_COMMAND}, REQ_RUN_COMMAND);
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(FDROID_TERMUX)));
+            }
+        });
+
+        // ---- Step 2: the one command ----
+        root.addView(heading("2  Paste this into Termux"));
+        root.addView(text("Installs the launcher, the homescreen shortcut and everything "
+                + "this app needs. Safe to run twice.", 15, GREY, Typeface.NORMAL));
+
+        TextView command = text(Setup.SETUP_COMMAND, 13, INK, Typeface.NORMAL);
+        command.setTypeface(Typeface.MONOSPACE);
+        command.setTextIsSelectable(true);
+        command.setBackgroundColor(Color.parseColor("#F1F1F1"));
+        command.setPadding(dp(12), dp(12), dp(12), dp(12));
+        root.addView(command);
+
+        button(root, "Copy & open Termux", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Setup.copySetupCommand(MainActivity.this);
+                if (Setup.openTermux(MainActivity.this)) {
+                    toast("Copied — long-press the terminal, tap Paste, then Enter");
+                } else {
+                    toast("Copied. Termux isn’t installed yet (step 1).");
                 }
             }
         });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(24);
-        root.addView(grant, lp);
+        button(root, "Copy command only", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Setup.copySetupCommand(MainActivity.this);
+                toast("Copied to clipboard");
+            }
+        });
 
-        status = new TextView(this);
-        status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        status.setPadding(0, dp(16), 0, 0);
-        root.addView(status);
+        // ---- Step 3: the runtime permission ----
+        root.addView(heading("3  Allow this app to run it"));
+        root.addView(text("Android must show you this grant dialog once — installing the "
+                + "app doesn’t cover it.", 15, GREY, Typeface.NORMAL));
+        permStatus = statusLine(root);
+        grant = button(root, "Grant Termux “Run commands”", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    requestPermissions(new String[]{Setup.PERM_RUN_COMMAND}, REQ_RUN_COMMAND);
+                }
+            }
+        });
+
+        // ---- Verify ----
+        root.addView(heading("Check setup"));
+        checkResult = text("", 15, GREY, Typeface.NORMAL);
+        button(root, "Check setup", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                checkResult.setTextColor(GREY);
+                checkResult.setText("Asking Termux…");
+                Setup.probe(MainActivity.this, new Setup.ResultListener() {
+                    @Override public void onResult(int code, String detail) {
+                        showCheck(code);
+                    }
+                });
+            }
+        });
+        root.addView(checkResult);
 
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(Color.WHITE);
@@ -90,23 +148,95 @@ public class MainActivity extends Activity {
             boolean granted = grantResults.length > 0
                     && grantResults[0] == PackageManager.PERMISSION_GRANTED;
             if (!granted) {
-                Toast.makeText(this,
-                        "Denied. If no dialog appeared, grant it manually in "
-                                + "Settings → Apps → Open Claude Code Here → Permissions.",
-                        Toast.LENGTH_LONG).show();
+                toast("Denied. If no dialog appeared, grant it in "
+                        + "Settings → Apps → Open Claude Code Here → Permissions.");
             }
             refreshStatus();
         }
     }
 
     private void refreshStatus() {
-        boolean granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
-                || checkSelfPermission(ShareActivity.PERM_RUN_COMMAND)
-                        == PackageManager.PERMISSION_GRANTED;
-        status.setText(granted
-                ? "✓ Run-commands permission granted."
-                : "✗ Run-commands permission NOT granted yet.");
-        status.setTextColor(granted ? Color.parseColor("#2E7D32") : Color.parseColor("#C62828"));
+        boolean termux = Setup.termuxInstalled(this);
+        mark(termuxStatus, termux, "Termux installed", "Termux not found");
+        getTermux.setVisibility(termux ? View.GONE : View.VISIBLE);
+
+        boolean granted = Setup.permissionGranted(this);
+        mark(permStatus, granted, "Permission granted", "Permission not granted yet");
+        grant.setVisibility(granted ? View.GONE : View.VISIBLE);
+    }
+
+    private void showCheck(int code) {
+        String msg;
+        boolean good = code == Setup.OK;
+        switch (code) {
+            case Setup.OK:
+                msg = "✓ All set — share a file and pick “Open Claude Code here”.";
+                break;
+            case Setup.NO_TERMUX:
+                msg = "✗ Termux isn’t installed (step 1).";
+                break;
+            case Setup.NO_PERMISSION:
+                msg = "✗ Permission not granted (step 3).";
+                break;
+            case Setup.NONZERO:
+                msg = "✗ Termux answered, but claude-launch isn’t installed — run the "
+                        + "step 2 command.";
+                break;
+            default: // REFUSED / TIMEOUT
+                msg = "✗ Termux won’t take commands yet. Run the step 2 command, then "
+                        + "fully close Termux (swipe it from Recents) and reopen it.";
+                break;
+        }
+        checkResult.setTextColor(good ? GREEN : RED);
+        checkResult.setText(msg);
+    }
+
+    // ---- tiny view helpers ----
+
+    private void mark(TextView tv, boolean good, String yes, String no) {
+        tv.setText(good ? "✓ " + yes : "✗ " + no);
+        tv.setTextColor(good ? GREEN : RED);
+    }
+
+    private TextView heading(String s) {
+        TextView tv = text(s, 17, INK, Typeface.BOLD);
+        ((LinearLayout.LayoutParams) tv.getLayoutParams()).topMargin = dp(28);
+        return tv;
+    }
+
+    private TextView text(String s, int sp, int color, int style) {
+        TextView tv = new TextView(this);
+        tv.setText(s);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        tv.setTextColor(color);
+        tv.setTypeface(Typeface.DEFAULT, style);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(8);
+        tv.setLayoutParams(lp);
+        return tv;
+    }
+
+    private TextView statusLine(LinearLayout parent) {
+        TextView tv = text("", 15, GREY, Typeface.BOLD);
+        parent.addView(tv);
+        return tv;
+    }
+
+    private Button button(LinearLayout parent, String label, View.OnClickListener onClick) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setOnClickListener(onClick);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(8);
+        parent.addView(b, lp);
+        return b;
+    }
+
+    private void toast(String s) {
+        Toast.makeText(this, s, Toast.LENGTH_LONG).show();
     }
 
     private int dp(int v) {

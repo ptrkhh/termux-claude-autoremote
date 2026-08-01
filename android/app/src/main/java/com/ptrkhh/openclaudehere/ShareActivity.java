@@ -19,21 +19,16 @@ import java.util.ArrayList;
  * lives in ("here"), and asks Termux to run {@code ~/bin/claude-launch --dir
  * <folder>} — which then shows the model/effort pickers and starts Claude Code
  * in Remote Control mode.
+ *
+ * <p>If Termux rejects the hand-off, this opens the setup screen rather than
+ * failing with a toast the user can't act on.
  */
 public class ShareActivity extends Activity {
 
-    // Where the launcher is installed by install.sh (Termux $HOME/bin).
-    private static final String CLAUDE_LAUNCH =
-            "/data/data/com.termux/files/home/bin/claude-launch";
-
-    private static final String TERMUX_PACKAGE = "com.termux";
-    private static final String RUN_COMMAND_SERVICE = "com.termux.app.RunCommandService";
-    private static final String ACTION_RUN_COMMAND = "com.termux.RUN_COMMAND";
-
-    // Termux declares RUN_COMMAND as a *dangerous* (runtime) permission, so it is
-    // never granted just by being listed in the manifest — it must be requested.
-    static final String PERM_RUN_COMMAND = "com.termux.permission.RUN_COMMAND";
     private static final int REQ_RUN_COMMAND = 1;
+
+    /** Termux reports refusals within a second; success not until Claude exits. */
+    private static final long ERROR_WINDOW_MS = 3000;
 
     // Resolved between onCreate and the permission callback.
     private String pendingDir;
@@ -68,13 +63,12 @@ public class ShareActivity extends Activity {
         // Ask for Termux's Run-commands permission the first time; the system
         // shows the grant dialog over this (invisible) activity.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                && checkSelfPermission(PERM_RUN_COMMAND) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{PERM_RUN_COMMAND}, REQ_RUN_COMMAND);
+                && checkSelfPermission(Setup.PERM_RUN_COMMAND) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Setup.PERM_RUN_COMMAND}, REQ_RUN_COMMAND);
             return; // continue in onRequestPermissionsResult
         }
 
         launchClaude(pendingDir);
-        finish();
     }
 
     @Override
@@ -83,10 +77,8 @@ public class ShareActivity extends Activity {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 launchClaude(pendingDir);
             } else {
-                fail("This app needs Termux's “Run commands” permission.\n"
-                        + "Grant it in Settings → Apps → Open Claude Code Here → Permissions, then share again.", null);
+                openSetup("Termux’s “Run commands” permission is needed — step 3.");
             }
-            finish();
         }
     }
 
@@ -121,32 +113,42 @@ public class ShareActivity extends Activity {
         return intent.getParcelableExtra(key);
     }
 
-    private void launchClaude(String dir) {
-        Intent intent = new Intent();
-        intent.setClassName(TERMUX_PACKAGE, RUN_COMMAND_SERVICE);
-        intent.setAction(ACTION_RUN_COMMAND);
-        intent.putExtra("com.termux.RUN_COMMAND_PATH", CLAUDE_LAUNCH);
-        intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", new String[]{"--dir", dir});
-        intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", dir);
-        // false -> Termux opens a terminal session in the foreground, which the
-        // interactive Claude Code process needs.
-        intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", false);
-        intent.putExtra("com.termux.RUN_COMMAND_SESSION_ACTION", "0");
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent);
-            } else {
-                startService(intent);
+    /**
+     * Hands the folder to Termux. Stays alive (invisibly) just long enough to
+     * catch a rejection: a timeout here means the session started fine, since
+     * Termux only reports a foreground command's result once it exits.
+     */
+    private void launchClaude(final String dir) {
+        Toast.makeText(this, "Claude → " + new File(dir).getName(), Toast.LENGTH_SHORT).show();
+        Setup.launchClaude(this, dir, ERROR_WINDOW_MS, new Setup.ResultListener() {
+            @Override public void onResult(int code, String detail) {
+                switch (code) {
+                    case Setup.NO_TERMUX:
+                        openSetup("Termux isn’t installed — step 1.");
+                        break;
+                    case Setup.NO_PERMISSION:
+                        openSetup("Termux’s “Run commands” permission is needed — step 3.");
+                        break;
+                    case Setup.REFUSED:
+                        // Termux's own gate: allow-external-apps, which only
+                        // takes effect after a full restart of Termux.
+                        openSetup("Termux refused the command — finish setup, then fully "
+                                + "close and reopen Termux.");
+                        break;
+                    default: // OK / NONZERO / TIMEOUT — the session is on its way
+                        finish();
+                        break;
+                }
             }
-            Toast.makeText(this, "Claude → " + new File(dir).getName(), Toast.LENGTH_SHORT).show();
-        } catch (SecurityException e) {
-            // Permission is granted by this point, so this is Termux's own gate:
-            // allow-external-apps, and it only takes effect after a full restart.
-            fail("Termux refused the command.\nSet `allow-external-apps=true` in ~/.termux/termux.properties, then FULLY close Termux (swipe it away / Exit from its notification) and reopen it — `termux-reload-settings` alone isn't always enough.", null);
-        } catch (Exception e) {
-            fail("Couldn't reach Termux. Is it installed?", null);
-        }
+        });
+    }
+
+    /** Shows why the hand-off failed and lands the user on the screen that fixes it. */
+    private void openSetup(String why) {
+        Toast.makeText(this, why, Toast.LENGTH_LONG).show();
+        startActivity(new Intent(this, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        finish();
     }
 
     /**

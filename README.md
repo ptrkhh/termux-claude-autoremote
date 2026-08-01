@@ -8,24 +8,30 @@ Control mode before opening the matching conversation in the Claude app.
 It also provides a touch-friendly picker for recent Claude sessions, so they can
 be resumed without using the terminal's interactive `claude --resume` picker.
 
-## Requirements
+## Setup
 
-- Termux, Termux:API, and Termux:Widget installed from the same source
-- Termux packages: `termux-api`, `jq`, and `coreutils`
-- Claude Code installed and signed in
-- Claude mobile app installed and signed in
+**1. Install the apps** — [Termux](https://f-droid.org/packages/com.termux/),
+[Termux:API](https://f-droid.org/packages/com.termux.api/) and
+[Termux:Widget](https://f-droid.org/packages/com.termux.widget/). All three,
+all from the same source (F-Droid *or* GitHub — mixing them breaks the plugins).
 
-## Install
-
-In Termux:
+**2. Open Termux and paste this:**
 
 ```sh
-curl -fsSL https://github.com/ptrkhh/termux-claude-autoremote/releases/latest/download/install.sh | bash
+pkg install -y curl && curl -fsSL https://github.com/ptrkhh/termux-claude-autoremote/releases/latest/download/install.sh | bash
 ```
 
-This writes `~/bin/claude-launch` and `~/.shortcuts/Claude`.
+That is the whole Termux side: it installs the packages (`termux-api`, `jq`,
+`coreutils`), writes `~/bin/claude-launch` and `~/.shortcuts/Claude`, enables
+`allow-external-apps` for the share-sheet app below, and prints a check of
+anything it couldn't do for you. Re-running it is safe — that's also how you
+update.
 
-Place the **Claude** shortcut from Termux:Widget on the Android homescreen.
+**3. Add the widget** — long-press the homescreen → Widgets → Termux:Widget →
+pick **Claude**.
+
+You also need Claude Code itself installed in Termux and signed in (run `claude`
+once).
 
 ## Use
 
@@ -67,28 +73,21 @@ Under the hood the app resolves the shared file's real folder and calls
 
 ### Install the app
 
-1. Grab `open-claude-code-here.apk` from the latest
-   [release](https://github.com/ptrkhh/termux-claude-autoremote/releases/latest),
-   or from the **Build APK** workflow's artifacts under the repo's Actions tab.
-2. Sideload it (allow "install unknown apps" for your browser/file manager).
-3. One-time Termux setup so the app is allowed to start `claude-launch`:
+1. Install `open-claude-code-here.apk` from the latest
+   [release](https://github.com/ptrkhh/termux-claude-autoremote/releases/latest)
+   (allow "install unknown apps" for your browser/file manager).
+2. Open it and follow the three steps on screen. If you already ran the setup
+   command above, only step 3 is left: tap **Grant Termux "Run commands"** — an
+   Android runtime permission that installing the app does *not* cover.
+3. Tap **Check setup**. It runs a harmless command in Termux and tells you which
+   step, if any, is still missing.
 
-   ```sh
-   mkdir -p ~/.termux
-   printf 'allow-external-apps=true\n' >> ~/.termux/termux.properties
-   ```
+If you enabled `allow-external-apps` during this session, **fully close and
+reopen Termux** (swipe it from Recents, or *Exit* from its notification) before
+sharing — `termux-reload-settings` alone does not always pick that property up.
 
-   Then **fully close and reopen Termux** (swipe it away from Recents, or use
-   *Exit* from its notification). `termux-reload-settings` alone does not always
-   pick up `allow-external-apps`.
-
-4. Open the **Open Claude Code Here** app and tap **Grant Termux "Run commands"
-   permission**. This runtime permission is *not* granted just by installing the
-   app — Android must show you the grant dialog once. The app's home screen shows
-   ✓/✗ so you can confirm it stuck. (You can also grant it on first share, but
-   granting it here up front is the most reliable.)
-
-Building it yourself needs only the Android SDK: `cd android && ./gradlew assembleDebug`.
+Building the app yourself needs only the Android SDK:
+`cd android && ./gradlew assembleDebug`.
 
 ### File-explorer compatibility
 
@@ -116,6 +115,12 @@ the clipboard URI into an issue.
 | FX File Explorer         | ❌ likely | Private FileProvider — no path exposed |
 
 Legend: ✅ folder resolves, ⚠️ depends on settings, ❌ folder hidden (error toast).
+
+## Releasing
+
+`install.sh` and `open-claude-code-here.apk` are built by CI and attached to
+each published release, so the one-liner above always matches the launcher in
+that release. To produce the installer locally: `scripts/build-installer.sh > install.sh`.
 
 ## Security
 

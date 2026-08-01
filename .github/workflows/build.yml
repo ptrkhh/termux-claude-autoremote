@@ -1,10 +1,13 @@
-name: Build APK
+name: Build
 
 on:
   push:
     paths:
       - "android/**"
-      - ".github/workflows/android.yml"
+      - "bin/**"
+      - "scripts/**"
+      - "shortcuts-Claude"
+      - ".github/workflows/build.yml"
   workflow_dispatch:
   release:
     types: [published]
@@ -13,7 +16,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  apk:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,3 +53,33 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: open-claude-code-here.apk
+
+  # The setup one-liner curls install.sh from the latest release, so that asset
+  # has to be built from the same commit as the launcher it embeds.
+  installer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build install.sh
+        run: |
+          bash scripts/build-installer.sh > install.sh
+          bash -n install.sh
+
+      - name: Check the embedded launcher round-trips
+        run: |
+          grep -oP "(?<=printf '%s' ')[A-Za-z0-9+/=]+(?=')" install.sh \
+            | head -1 | base64 -d > launcher.out
+          diff launcher.out bin/claude-launch
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-sh
+          path: install.sh
+
+      - name: Attach install.sh to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: install.sh
