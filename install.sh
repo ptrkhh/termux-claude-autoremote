@@ -102,7 +102,10 @@ fi
 if command -v claude >/dev/null 2>&1; then
   ok "Claude Code installed"
 else
-  warn "Claude Code not found — install it and run 'claude' once to sign in."
+  warn "Claude Code not found. Install it with:"
+  warn "    pkg install -y nodejs-lts && npm install -g @anthropic-ai/claude-code"
+  warn "  then run 'claude' once to sign in. Avoid installers that patchelf the"
+  warn "  native binary — see the repo README (\"Claude Code\")."
 fi
 
 # ---------- 6. what's left, and only what's left ----------

@@ -33,8 +33,65 @@ before piping it into a shell.
 **3. Add the widget** — long-press the homescreen → Widgets → Termux:Widget →
 pick **Claude**.
 
-You also need Claude Code itself installed in Termux and signed in (run `claude`
-once).
+### Claude Code
+
+The launcher assumes `claude` is installed and signed in. The minimal install:
+
+```sh
+pkg install -y nodejs-lts && npm install -g @anthropic-ai/claude-code
+claude   # run once to sign in
+```
+
+Three things are known to break Claude Code on Android. Everything else about a
+Termux dev setup is out of scope here — this is only the list that stops
+`claude` from running at all.
+
+**Don't let anything run `patchelf` on the Claude binary.** Some Termux guides
+install the native `linux-arm64` build and repoint its ELF interpreter with
+`patchelf --set-interpreter` so it loads under Termux's glibc. Claude Code is a
+Bun standalone: it finds its embedded JS bundle through a trailer at the end of
+the file, and patchelf shifts segment offsets and appends a relocated
+section-header table at EOF, displacing that trailer. The symptom is a module
+name that is visibly a fragment of minified JavaScript:
+
+```
+error: Module not found 'ntent.at(-1);switch(t.delta.type){c'
+```
+
+The binary can't be repaired in place — truncating gets past module resolution
+and then dies with SIGBUS. The npm install above avoids this class entirely. If
+you are already on a native install, run the *unmodified* binary through the
+glibc loader (`exec $PREFIX/glibc/lib/ld-linux-aarch64.so.1 <binary>`) instead of
+patching the ELF, and make sure no wrapper script re-patches it on update.
+
+**Android 12+ kills Termux background processes.** Past ~32 child processes
+Android silently SIGKILLs them, which shows up as:
+
+```
+[Process completed (signal 9) - press Enter]
+```
+
+This launcher is exposed to it: it backgrounds a watcher subshell that polls for
+the remote-control session id while `claude` runs in the foreground. Fix it with
+[Shizuku](https://f-droid.org/packages/moe.shizuku.privileged.api/) — no PC
+needed. Install it, start it, export `rish` into Termux, then:
+
+```sh
+rish -c "settings put global settings_enable_monitor_phantom_procs false"
+rish -c "device_config put activity_manager max_phantom_processes 2147483647"
+```
+
+Re-run after OS updates.
+
+**`claude /login` timing out is usually DNS, not your account.** If sign-in
+fails with `getaddrinfo ETIMEOUT platform.claude.com`, the cause is that Claude
+Code resolves through bundled c-ares, which reads the literal `/etc/resolv.conf`
+— a path that frequently doesn't exist on Android, where `/etc` maps to
+`/system/etc`. With no config, c-ares falls back to nameserver `127.0.0.1` and
+times out. This is easy to misdiagnose because everything else keeps working:
+Termux's `curl` goes through Android's netd and glibc's resolver reads a
+different file. The fix is to create `/etc/resolv.conf` with real nameservers,
+which needs root since `/system` is read-only.
 
 ## Use
 
