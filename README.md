@@ -27,6 +27,9 @@ That is the whole Termux side: it installs the packages (`termux-api`, `jq`,
 anything it couldn't do for you. Re-running it is safe — that's also how you
 update.
 
+It's [`install.sh`](install.sh) in this repo, unmodified, so you can read it
+before piping it into a shell.
+
 **3. Add the widget** — long-press the homescreen → Widgets → Termux:Widget →
 pick **Claude**.
 
@@ -118,9 +121,15 @@ Legend: ✅ folder resolves, ⚠️ depends on settings, ❌ folder hidden (erro
 
 ## Releasing
 
-`install.sh` and `open-claude-code-here.apk` are built by CI and attached to
-each published release, so the one-liner above always matches the launcher in
-that release. To produce the installer locally: `scripts/build-installer.sh > install.sh`.
+Publishing a GitHub release is what makes a change live. CI attaches three
+assets to it: `install.sh`, `claude-launch`, and `open-claude-code-here.apk`.
+The setup one-liner fetches `install.sh` from the latest release, and that
+script fetches `claude-launch` from the same place — so a fresh install always
+gets an installer and a launcher from the same published release, and pushing
+to `main` never changes what new users get until you publish.
+
+CI also syntax-checks and shellchecks both scripts and runs
+`claude-launch --selftest` on every push.
 
 ## Security
 
