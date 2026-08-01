@@ -6,6 +6,16 @@
          (see the repo README). -->
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
+    <!-- Android 11+ filters package queries: without this, getPackageInfo()
+         reports Termux as missing and getLaunchIntentForPackage() returns null
+         even when it is installed, so the setup screen would show ✗ for apps
+         that are actually there. -->
+    <queries>
+        <package android:name="com.termux" />
+        <package android:name="com.termux.api" />
+        <package android:name="com.termux.widget" />
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"

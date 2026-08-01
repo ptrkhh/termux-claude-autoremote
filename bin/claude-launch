@@ -314,7 +314,8 @@ main() {
   fi
   # ponytail: folder + HH:MM + animal codename makes each session easy to spot;
   # collides only if two same-minute launches draw the same animal (~1/16).
-  local rc_name="$(basename "$DIR") $(date +%H:%M) ${ANIMALS[RANDOM % ${#ANIMALS[@]}]}"
+  local rc_name
+  rc_name="$(basename "$DIR") $(date +%H:%M) ${ANIMALS[RANDOM % ${#ANIMALS[@]}]}"
   local cmd
   if [ -n "$SID" ]; then
     cmd=(claude --resume "$SID" --dangerously-skip-permissions --remote-control "$rc_name")

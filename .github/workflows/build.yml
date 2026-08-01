@@ -1,10 +1,12 @@
-name: Build APK
+name: Build
 
 on:
   push:
     paths:
       - "android/**"
-      - ".github/workflows/android.yml"
+      - "bin/**"
+      - "install.sh"
+      - ".github/workflows/build.yml"
   workflow_dispatch:
   release:
     types: [published]
@@ -13,7 +15,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  apk:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,10 +45,30 @@ jobs:
           name: open-claude-code-here-apk
           path: open-claude-code-here.apk
 
-      # When a GitHub release is published, attach the APK so it can be
-      # downloaded directly onto the phone.
-      - name: Attach APK to release
+      # Publishing a release is what makes a new setup live: the one-liner curls
+      # install.sh from the latest release, and install.sh curls claude-launch
+      # from the same place, so both always come from the same published tag.
+      - name: Attach release assets
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: open-claude-code-here.apk
+          files: |
+            open-claude-code-here.apk
+            install.sh
+            bin/claude-launch
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax-check the shell
+        run: bash -n install.sh bin/claude-launch
+
+      - name: Run the launcher's selftest
+        run: bash bin/claude-launch --selftest
+
+      - name: Shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck install.sh bin/claude-launch
