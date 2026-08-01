@@ -10,28 +10,60 @@ be resumed without using the terminal's interactive `claude --resume` picker.
 
 ## Setup
 
-**1. Install the apps** — [Termux](https://f-droid.org/packages/com.termux/),
-[Termux:API](https://f-droid.org/packages/com.termux.api/) and
-[Termux:Widget](https://f-droid.org/packages/com.termux.widget/). All three,
-all from the same source (F-Droid *or* GitHub — mixing them breaks the plugins).
+### Recommended — let the app walk you through it
 
-**2. Open Termux and paste this:**
+The companion app is the guided installer: it detects what's missing, links each
+piece, and verifies the result. Nothing to copy out of this page.
+
+**1.** Install `open-claude-code-here.apk` from the
+[latest release](https://github.com/ptrkhh/termux-claude-autoremote/releases/latest).
+Your browser or file manager will ask you to allow installing unknown apps.
+
+**2.** Open **Open Claude Code Here** and work down its three steps:
+
+- **Install Termux** — Termux, Termux:API and Termux:Widget each get a status
+  line and a button straight to their F-Droid page. Installed ones show a ✓ and
+  their button disappears.
+- **Paste this into Termux** — tap **Copy & open Termux**, then long-press the
+  terminal, tap Paste, and press Enter. That one command is the entire Termux
+  side (see [what it does](#what-the-command-does)).
+- **Allow this app to run it** — grants Termux's "Run commands" permission. This
+  is an Android runtime permission; installing the app does *not* cover it.
+
+**3.** Tap **Check setup**. It runs a command through Termux and names whichever
+step is still missing, so you never have to guess whether it worked.
+
+**4.** Long-press your homescreen → Widgets → Termux:Widget → pick **Claude**.
+
+Installing the app here also gets you the **Open Claude Code here** share-sheet
+entry described [below](#share-a-file-to-claude-open-claude-code-here).
+
+### Alternative — no APK
+
+Same result, minus the share-sheet entry and the guided checks.
+
+**1.** Install [Termux](https://f-droid.org/packages/com.termux/),
+[Termux:API](https://f-droid.org/packages/com.termux.api/) and
+[Termux:Widget](https://f-droid.org/packages/com.termux.widget/) — all three,
+all from the same source (F-Droid *or* GitHub; mixing them breaks the plugins).
+
+**2.** Open Termux and paste this:
 
 ```sh
 pkg install -y curl && curl -fsSL https://github.com/ptrkhh/termux-claude-autoremote/releases/latest/download/install.sh | bash
 ```
 
-That is the whole Termux side: it installs the packages (`termux-api`, `jq`,
+**3.** Long-press your homescreen → Widgets → Termux:Widget → pick **Claude**.
+
+### What the command does
+
+Both paths run the same one-liner. It installs the packages (`termux-api`, `jq`,
 `coreutils`), writes `~/bin/claude-launch` and `~/.shortcuts/Claude`, enables
-`allow-external-apps` for the share-sheet app below, and prints a check of
-anything it couldn't do for you. Re-running it is safe — that's also how you
-update.
+`allow-external-apps` for the share-sheet app, and prints a check of anything it
+couldn't do for you. Re-running it is safe — that's also how you update.
 
 It's [`install.sh`](install.sh) in this repo, unmodified, so you can read it
 before piping it into a shell.
-
-**3. Add the widget** — long-press the homescreen → Widgets → Termux:Widget →
-pick **Claude**.
 
 ### Claude Code
 
@@ -131,16 +163,10 @@ the model/effort pickers and the usual Remote Control flow.
 Under the hood the app resolves the shared file's real folder and calls
 `~/bin/claude-launch --dir <folder>` through Termux's `RUN_COMMAND` service.
 
-### Install the app
-
-1. Install `open-claude-code-here.apk` from the latest
-   [release](https://github.com/ptrkhh/termux-claude-autoremote/releases/latest)
-   (allow "install unknown apps" for your browser/file manager).
-2. Open it and follow the three steps on screen. If you already ran the setup
-   command above, only step 3 is left: tap **Grant Termux "Run commands"** — an
-   Android runtime permission that installing the app does *not* cover.
-3. Tap **Check setup**. It runs a harmless command in Termux and tells you which
-   step, if any, is still missing.
+If you followed the recommended setup above, this already works — the app you
+installed to run the setup *is* the share target. Coming from the no-APK path
+instead, install the APK and open it; only the permission step will be left,
+and **Check setup** will confirm it.
 
 If you enabled `allow-external-apps` during this session, **fully close and
 reopen Termux** (swipe it from Recents, or *Exit* from its notification) before

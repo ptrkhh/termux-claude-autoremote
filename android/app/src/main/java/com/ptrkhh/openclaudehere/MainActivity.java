@@ -156,6 +156,13 @@ public class MainActivity extends Activity {
         });
         root.addView(checkResult);
 
+        // The app is the guided installer, so it has to name the last step too —
+        // otherwise someone finishes here with no way to start a session.
+        root.addView(heading("Last step — the homescreen shortcut"));
+        root.addView(text("Long-press your homescreen → Widgets → Termux:Widget → pick "
+                + "“Claude”. That shortcut is what starts a session; this app only adds "
+                + "the share-sheet entry.", 15, GREY, Typeface.NORMAL));
+
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(Color.WHITE);
         scroll.addView(root);
