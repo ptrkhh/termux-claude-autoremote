@@ -12,6 +12,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
+import android.widget.HorizontalScrollView;
 import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -38,7 +39,6 @@ public class LaunchActivity extends Activity {
     private static final String KEY_MODEL = "model";
     private static final String KEY_EFFORT = "effort";
 
-    private LinearLayout root;
     private LinearLayout folderList;
     private RadioGroup modelGroup;
     private RadioGroup effortGroup;
@@ -49,11 +49,19 @@ public class LaunchActivity extends Activity {
     private String selectedDir;
     private boolean claudePresent = true;
 
+    /** True from the moment Launch fires until the result lands. Guards against a
+     *  second tap: showFolders() -> updateLaunchLabel() would otherwise re-enable
+     *  the button mid-launch and start a second Claude session. */
+    private boolean launching;
+
+    /** Set in onDestroy. isFinishing() alone does not cover config-change destroys. */
+    private boolean dead;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        root = new LinearLayout(this);
+        LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.WHITE);
         int pad = Views.dp(this, 24);
@@ -75,11 +83,11 @@ public class LaunchActivity extends Activity {
 
         root.addView(Views.heading(this, "Model"));
         modelGroup = radioRow();
-        root.addView(modelGroup);
+        root.addView(scrollRow(modelGroup));
 
         root.addView(Views.heading(this, "Effort"));
         effortGroup = radioRow();
-        root.addView(effortGroup);
+        root.addView(scrollRow(effortGroup));
 
         launchButton = Views.button(this, root, "Launch", new View.OnClickListener() {
             @Override public void onClick(View v) {
@@ -102,7 +110,7 @@ public class LaunchActivity extends Activity {
         if (preset != null) {
             select(preset);
         }
-        refresh();
+        updateLaunchLabel();
     }
 
     /** A horizontal RadioGroup — the default is vertical, which is not a chip row. */
@@ -110,6 +118,19 @@ public class LaunchActivity extends Activity {
         RadioGroup g = new RadioGroup(this);
         g.setOrientation(RadioGroup.HORIZONTAL);
         return g;
+    }
+
+    /**
+     * A horizontal RadioGroup overflows rather than wrapping: LinearLayout gives
+     * later children an AT_MOST 0 width once the running total exceeds the parent,
+     * so trailing chips measure to zero and become invisible and untappable. Five
+     * effort chips exceed the usable width on a 360dp device, so the row scrolls.
+     */
+    private HorizontalScrollView scrollRow(RadioGroup group) {
+        HorizontalScrollView sv = new HorizontalScrollView(this);
+        sv.setHorizontalScrollBarEnabled(false);
+        sv.addView(group);
+        return sv;
     }
 
     private static List<String> splitWords(String s) {
@@ -176,8 +197,19 @@ public class LaunchActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        // Setup.deliver unregisters its own receiver on first result or timeout;
-        // this is the backstop for an activity destroyed mid-flight.
+        // isFinishing() is false for a config-change destroy, so it alone does not
+        // stop an in-flight callback from touching a dead view hierarchy.
+        dead = true;
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Also covers returning from SetupActivity after the user fixed whatever
+        // sent them there — without this the screen sits on "Loading…" forever.
+        if (!launching) {
+            refresh();
+        }
     }
 
     /** Fires the gate + --state in one background round trip. */
@@ -185,7 +217,7 @@ public class LaunchActivity extends Activity {
         setBusy("Loading…");
         Setup.state(this, new Setup.ResultListener() {
             @Override public void onResult(int code, String stdout, String detail) {
-                if (isFinishing()) {
+                if (dead || isFinishing()) {
                     return;
                 }
                 onState(code, stdout);
@@ -265,8 +297,18 @@ public class LaunchActivity extends Activity {
         }
 
         SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
-        fillRadios(modelGroup, models, p.getString(KEY_MODEL, models.get(0)));
-        fillRadios(effortGroup, efforts, p.getString(KEY_EFFORT, efforts.get(0)));
+        // Prefer what the user has already tapped over the stored default — this
+        // call can land seconds after the chips became interactive.
+        String curModel = checked(modelGroup);
+        if (curModel.isEmpty()) {
+            curModel = p.getString(KEY_MODEL, models.get(0));
+        }
+        String curEffort = checked(effortGroup);
+        if (curEffort.isEmpty()) {
+            curEffort = p.getString(KEY_EFFORT, efforts.get(0));
+        }
+        fillRadios(modelGroup, models, curModel);
+        fillRadios(effortGroup, efforts, curEffort);
 
         claudePresent = claude;
         if (!claudePresent) {
@@ -313,6 +355,9 @@ public class LaunchActivity extends Activity {
 
     /** The button always names the full resolved target — nothing launches blind. */
     private void updateLaunchLabel() {
+        if (launching) {
+            return;
+        }
         boolean ready = selectedDir != null && claudePresent;
         launchButton.setEnabled(ready);
         if (selectedDir == null) {
@@ -333,6 +378,7 @@ public class LaunchActivity extends Activity {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(KEY_MODEL, model).putString(KEY_EFFORT, effort).apply();
 
+        launching = true;
         launchButton.setEnabled(false);
         launchButton.setText("Starting…");
         Toast.makeText(this, "Claude → " + new File(dir).getName(), Toast.LENGTH_SHORT).show();
@@ -341,7 +387,7 @@ public class LaunchActivity extends Activity {
         // every error branch below fires into a destroyed activity.
         Setup.launch(this, dir, model, effort, new Setup.ResultListener() {
             @Override public void onResult(int code, String stdout, String detail) {
-                if (isFinishing()) {
+                if (dead || isFinishing()) {
                     return;
                 }
                 switch (code) {
@@ -352,17 +398,28 @@ public class LaunchActivity extends Activity {
                         finish();
                         break;
                     case Setup.NO_TERMUX:
+                        launching = false;
                         openSetup("Termux isn’t installed — step 1.");
                         break;
                     case Setup.REFUSED:
+                        launching = false;
                         openSetup("Termux refused the command — finish setup, then fully "
                                 + "close and reopen Termux.");
                         break;
+                    case Setup.NO_PERMISSION:
+                        launching = false;
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            requestPermissions(new String[]{Setup.PERM_RUN_COMMAND}, REQ_RUN_COMMAND);
+                        }
+                        break;
                     default:
                         // NONZERO foreground: bad folder, rejected model/effort.
-                        Toast.makeText(LaunchActivity.this,
-                                "Couldn’t start — check the folder still exists.",
-                                Toast.LENGTH_LONG).show();
+                        launching = false;
+                        selectedDir = null;
+                        String msg = detail == null || detail.isEmpty()
+                                ? "Couldn’t start — check the folder still exists."
+                                : detail.trim();
+                        Toast.makeText(LaunchActivity.this, msg, Toast.LENGTH_LONG).show();
                         refresh();
                         break;
                 }
