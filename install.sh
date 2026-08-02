@@ -110,12 +110,16 @@ fi
 # ---------- 6. what's left, and only what's left ----------
 say ""
 say "Done. Next:"
+say "  • Install the Open Claude Code Here app from the project's releases page."
+say "    It is what starts sessions now — this script only sets up the Termux side."
 if [ "$restart_needed" = 1 ]; then
-  say "  • Using the \"Open Claude Code here\" share app? Fully close Termux"
-  say "    (swipe it from Recents, or Exit from its notification) and reopen it."
+  say "  • You just enabled allow-external-apps. Fully close Termux (swipe it from"
+  say "    Recents, or Exit from its notification) and reopen it, or the app will"
+  say "    not be able to run anything at all."
 fi
 say ""
-say "If the app still shows Termux:API and Termux:Widget steps and a homescreen-"
-say "widget step, it is the old version — install the new APK from the latest"
-say "release, then you can uninstall both plugin apps."
+say "Already installed the app? If it still shows Termux:API and Termux:Widget"
+say "steps and a homescreen-widget step, it is the old version — install the latest"
+say "APK, then you can uninstall both plugin apps and the now-unused termux-api"
+say "package (pkg uninstall -y termux-api)."
 say ""
