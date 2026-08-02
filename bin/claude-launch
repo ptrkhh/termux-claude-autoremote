@@ -72,9 +72,17 @@ list_subdirs() (
 sanitize() { printf '%s' "$1" | tr '\t\n\r' '   '; }
 
 # valid_choice VALUE CSV -> 0 if VALUE is a member of the comma-separated CSV.
-# Commas around both sides make prefix matches ("opu") and injected lists
-# ("sonnet,haiku") fail, and an empty VALUE fails because CSV has no empty member.
+# Surrounding both sides with commas makes prefix matches ("opu") and trailing
+# junk ("opus,") fail, and an empty VALUE fails because CSV has no empty member.
+#
+# The comma guard is load-bearing, not defensive noise: without it
+# `valid_choice sonnet,haiku "opus,sonnet,haiku,fable"` ACCEPTS, because
+# ",opus,sonnet,haiku,fable," really does contain ",sonnet,haiku,". A value
+# holding a comma can never be a single member of a comma-separated list, so
+# rejecting it up front is both correct and the shortest fix. (Glob characters
+# need no guard — `",$1,"` is quoted, so a `*` is matched literally.)
 valid_choice() {
+  case "$1" in *,*) return 1 ;; esac
   case ",$2," in
     *",$1,"*) return 0 ;;
     *)        return 1 ;;
