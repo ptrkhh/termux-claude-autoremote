@@ -114,7 +114,7 @@ final class Setup {
 
     /** Termux reports a foreground command only when it exits, so a timeout here means success. */
     static final long ERROR_WINDOW_MS = 3000;
-    /** The read verbs return in milliseconds; this is today's probe() budget. */
+    /** The read verbs return in milliseconds; this is the budget the old `test -x` probe used. */
     static final long TIMEOUT_READ = 6000;
     /** --sessions spawns ~100 short-lived processes on an ARM device. */
     static final long TIMEOUT_SESSIONS = 12000;
@@ -177,10 +177,11 @@ final class Setup {
         final Context app = ctx.getApplicationContext();
         final Handler handler = new Handler(Looper.getMainLooper());
         final boolean[] answered = {false};
-        // A per-call UUID, not a counter. `callSeq` was static, so it reset to 0
-        // on process death: after a --launch the app can be killed while claude
-        // runs for hours holding Termux's PendingIntent, and the next --state
-        // would rebuild a filterEquals-equal Intent with the same request code.
+        // A per-call UUID, not a counter. An incrementing counter was rejected
+        // because a static one resets to 0 on process death: after a --launch
+        // the app can be killed while claude runs for hours holding Termux's
+        // PendingIntent, and the next --state would rebuild a filterEquals-equal
+        // Intent with the same request code.
         // FLAG_UPDATE_CURRENT then hands back the *stale* token, so when the old
         // session finally exits its terminal transcript is delivered to the
         // --state receiver — a bogus "re-run setup" on a healthy install, and it
@@ -196,33 +197,34 @@ final class Setup {
                 deliver(app, this, handler, answered, parse(intent), stdout(intent), detail(intent), cb);
             }
         };
-        IntentFilter filter = new IntentFilter(action);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            app.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            app.registerReceiver(receiver, filter);
-        }
-
-        Intent intent = new Intent();
-        intent.setClassName(TERMUX_PACKAGE, RUN_COMMAND_SERVICE);
-        intent.setAction(ACTION_RUN_COMMAND);
-        intent.putExtra("com.termux.RUN_COMMAND_PATH", path);
-        intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", args);
-        intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", workdir);
-        // false -> Termux opens a foreground terminal session, which the
-        // interactive Claude Code process needs. true -> silent, for the probe.
-        intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", background);
-        intent.putExtra("com.termux.RUN_COMMAND_SESSION_ACTION", "0");
-        // Termux fills this in with a "result" bundle. Must be mutable for that.
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            flags |= PendingIntent.FLAG_MUTABLE;
-        }
-        Intent resultIntent = new Intent(action).setPackage(app.getPackageName());
-        intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT",
-                PendingIntent.getBroadcast(app, action.hashCode(), resultIntent, flags));
 
         try {
+            IntentFilter filter = new IntentFilter(action);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                app.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                app.registerReceiver(receiver, filter);
+            }
+
+            Intent intent = new Intent();
+            intent.setClassName(TERMUX_PACKAGE, RUN_COMMAND_SERVICE);
+            intent.setAction(ACTION_RUN_COMMAND);
+            intent.putExtra("com.termux.RUN_COMMAND_PATH", path);
+            intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", args);
+            intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", workdir);
+            // false -> Termux opens a foreground terminal session, which the
+            // interactive Claude Code process needs. true -> silent, for the probe.
+            intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", background);
+            intent.putExtra("com.termux.RUN_COMMAND_SESSION_ACTION", "0");
+            // Termux fills this in with a "result" bundle. Must be mutable for that.
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                flags |= PendingIntent.FLAG_MUTABLE;
+            }
+            Intent resultIntent = new Intent(action).setPackage(app.getPackageName());
+            intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT",
+                    PendingIntent.getBroadcast(app, action.hashCode(), resultIntent, flags));
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 app.startForegroundService(intent);
             } else {
@@ -286,8 +288,24 @@ final class Setup {
         return out == null ? "" : out;
     }
 
+    /**
+     * The human-readable reason a command failed.
+     *
+     * <p>Termux sets {@code errmsg} only for its own failures — a refused service,
+     * an unusable path. Everything the launcher script itself diagnoses ("not a
+     * directory", "invalid --model") goes to stderr, so fall back to that;
+     * otherwise a non-zero exit arrives with nothing to show the user.
+     */
     private static String detail(Intent intent) {
         Bundle result = intent.getBundleExtra("result");
-        return result == null ? null : result.getString("errmsg");
+        if (result == null) {
+            return null;
+        }
+        String err = result.getString("errmsg");
+        if (err != null && !err.isEmpty()) {
+            return err;
+        }
+        String stderr = result.getString("stderr");
+        return stderr == null || stderr.isEmpty() ? null : stderr;
     }
 }
