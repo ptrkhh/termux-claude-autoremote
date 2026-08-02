@@ -95,8 +95,9 @@ public class SetupActivity extends Activity {
 
         // ---- Step 2: the one command ----
         root.addView(Views.heading(this, "2  Paste this into Termux"));
-        root.addView(Views.text(this, "Installs the launcher, the homescreen shortcut and everything "
-                + "this app needs. Safe to run twice.", 15, Views.GREY, Typeface.NORMAL));
+        root.addView(Views.text(this, "Installs the launcher and everything this app needs to "
+                + "drive it. Safe to run twice — that is also how you update.", 15,
+                Views.GREY, Typeface.NORMAL));
 
         TextView command = Views.text(this, Setup.SETUP_COMMAND, 13, Views.INK, Typeface.NORMAL);
         command.setTypeface(Typeface.MONOSPACE);

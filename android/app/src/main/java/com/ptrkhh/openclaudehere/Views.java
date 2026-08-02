@@ -13,7 +13,7 @@ import android.widget.TextView;
  * View helpers shared by the two screens. The app ships no layout XML, so these
  * are the layout language: everything is built in code.
  *
- * <p>Extracted from MainActivity because LaunchActivity needs the same helpers
+ * <p>Extracted from the setup screen because the launch screen needs the same helpers
  * and duplicating them across two activities is the kind of drift that ends with
  * two different paddings.
  */
