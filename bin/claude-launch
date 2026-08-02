@@ -10,19 +10,14 @@ CAP=15
 MIN_TURNS=3
 MODELS="opus,sonnet,haiku,fable"
 EFFORTS="low,medium,high,xhigh,max"
-# Widget used for every picker. Termux:API's `sheet` is a BottomSheetDialog and
-# it never sets a peek height or asks for the expanded state, so on some devices
-# it opens as a collapsed sliver at the bottom edge — only the first row shows
-# (often clipped) until you swipe it up. `radio` is an ordinary centred
-# AlertDialog that sizes itself to its content and scrolls, so the whole list is
-# on screen from the first tap, at the cost of one extra tap on OK. Set
-# CLAUDE_LAUNCH_PICKER=sheet to get the old one-tap sheet back (or `spinner`).
-PICKER="${CLAUDE_LAUNCH_PICKER:-radio}"
-case "$PICKER" in
-  radio|sheet|spinner) ;;
-  *) echo "claude-launch: unknown CLAUDE_LAUNCH_PICKER '$PICKER' — using radio" >&2
-     PICKER=radio ;;
-esac
+# Shown when the script is run with no arguments — i.e. from a Termux:Widget
+# shortcut that survived the upgrade. install.sh rewrites ~/.shortcuts/Claude to
+# print this, because the shortcut is the surface the tap actually lands on.
+MIGRATION_NOTICE="claude-launch is now driven by the Open Claude Code Here app.
+
+Open the app to pick a working directory, model and effort. Once the new APK is
+installed you can uninstall Termux:Widget and Termux:API, and remove this
+shortcut."
 # codenames make each Remote Control session easy to spot in the app
 ANIMALS=(cat dog fox owl bear wolf lion tiger panda koala otter seal hawk duck frog deer)
 PINNED=(
@@ -41,17 +36,6 @@ mru_add() {
     BEGIN{ if(new!="") emit(new) }
     NF{ emit($0) }
   '
-}
-
-# go_up PATH ROOT -> parent of PATH, never above ROOT
-go_up() {
-  local parent root
-  root="${2%/}"; root="${root:-/}"
-  parent=$(dirname "$1")
-  case "$parent" in
-    "$root"|"$root"/*) printf '%s\n' "$parent" ;;
-    *)                 printf '%s\n' "$root" ;;
-  esac
 }
 
 # list_subdirs PATH -> immediate subdirectory basenames, sorted (dotdirs skipped).
@@ -125,14 +109,11 @@ expect_rc() {
 }
 
 selftest() {
-  local out t
+  local out t err
   out=$(printf 'b\nc\n'    | mru_add a 5); [ "$out" = $'a\nb\nc' ] || { echo "mru_add basic FAIL: [$out]"; exit 1; }
   out=$(printf 'a\nb\n'    | mru_add a 5); [ "$out" = $'a\nb' ]    || { echo "mru_add dedupe FAIL: [$out]"; exit 1; }
   out=$(printf 'x\na\ny\n' | mru_add a 5); [ "$out" = $'a\nx\ny' ] || { echo "mru_add reorder FAIL: [$out]"; exit 1; }
   out=$(printf 'b\nc\nd\n' | mru_add a 2); [ "$out" = $'a\nb' ]    || { echo "mru_add cap FAIL: [$out]"; exit 1; }
-  out=$(go_up /r/a/b /r);  [ "$out" = /r/a ] || { echo "go_up FAIL: [$out]"; exit 1; }
-  out=$(go_up /r/a/b /r/); [ "$out" = /r/a ] || { echo "go_up trailing-slash FAIL: [$out]"; exit 1; }
-  out=$(go_up /r /r);      [ "$out" = /r ]   || { echo "go_up root-clamp FAIL: [$out]"; exit 1; }
   t=$(mktemp -d); mkdir -p "$t/x" "$t/y" "$t/.hidden" "$t/has space" "$t/$(printf 'new\nline')"; touch "$t/f"
   out=$(list_subdirs "$t" | paste -sd,); rm -rf "$t"
   [ "$out" = "has space,x,y" ] || { echo "list_subdirs newline-drop FAIL: [$out]"; exit 1; }
@@ -236,29 +217,33 @@ selftest() {
   expect_rc 2 env HOME="$t" "$BASH" "$0" --launch --dir "$t/proj" --model opus --effort high --bogus x
   unset CLAUDE_LAUNCH_DRYRUN
   rm -rf "$t"
+  t=$(mktemp -d); mkdir -p "$t/proj"
+  out=$(CLAUDE_LAUNCH_DRYRUN=1 HOME="$t" "$BASH" "$0" --dir "$t/proj")
+  case "$out" in
+    "cd $t/proj && claude --model opus --effort high --dangerously-skip-permissions --remote-control "*) ;;
+    *) echo "--dir legacy alias FAIL: [$out]"; exit 1 ;;
+  esac
+  expect_rc 2 "$BASH" "$0" --dir
+  # a nonexistent path must be distinguishable from an empty directory
+  expect_rc 2 "$BASH" "$0" --ls "$t/definitely-not-here"
+  out=$("$BASH" "$0")
+  case "$out" in
+    *"Open Claude Code Here"*) ;;
+    *) echo "bare-invocation notice FAIL: [$out]"; exit 1 ;;
+  esac
+  expect_rc 0 "$BASH" "$0"
+  expect_rc 2 "$BASH" "$0" --nonsense
+  # captured separately from expect_rc: under `set -o pipefail` a pipeline whose
+  # first command exits 2 reports 2 as its own status even when grep (right of
+  # the pipe) matches, so `cmd | grep -q ... || fail` would fail this assertion
+  # for the wrong reason. `|| true` lets the nonzero exit through the assignment.
+  err=$("$BASH" "$0" --nonsense 2>&1 >/dev/null) || true
+  printf '%s\n' "$err" | grep -q nonsense || { echo "unknown-verb must name the argument"; exit 1; }
+  rm -rf "$t"
   echo "selftest OK"
 }
 
-# ---------- dialog helpers (interactive; verified via CLAUDE_LAUNCH_DRYRUN=1) ----------
-# ponytail: termux-dialog -v is a comma-joined list with no escaping, so dir
-# names containing ',' break selection parsing. Rare on Android paths; switch to
-# an indexed dialog if it ever bites.
-
-# menu TITLE CSV -> selected text on stdout ("" if cancelled).
-# Cancel/dismiss/back reports code BUTTON_NEGATIVE with an empty .text for every
-# widget type, so "empty result" means cancelled regardless of $PICKER.
-menu() {
-  termux-dialog "$PICKER" -t "$1" -v "$2" | jq -r '.text // empty'
-}
-
-# menu_index TITLE CSV -> 0-based index of the selected row ("" if cancelled).
-# Needed for the resume list: row labels are free text (titles/prompts) and are
-# not safe to match by value, so we map the selection back by position instead.
-# .index is omitted entirely when nothing was picked, hence the -1 default.
-menu_index() {
-  termux-dialog "$PICKER" -t "$1" -v "$2" \
-    | jq -r 'if (.text // "") == "" or (.index // -1) < 0 then empty else (.index|tostring) end'
-}
+# ---------- headless verbs (--state / --ls / --sessions / --launch) ----------
 
 # list_sessions -> TAB-separated "ms_epoch<TAB>cwd<TAB>session_id<TAB>prompts",
 # newest first, up to 60 candidates. Source is ~/.claude/history.jsonl, grouped by
@@ -315,50 +300,6 @@ emit_sessions() {
   done < <(list_sessions)
 }
 
-# pick_session -> on a chosen session sets SID + DIR (caller's locals) and returns.
-# Cancel / no sessions -> exits the whole script cleanly (no launch).
-# Lists up to 20 resumable sessions: the transcript must exist and hold at least
-# MIN_TURNS assistant turns (drops /login-only, one-liners, aborted, and "no
-# conversation found" shells). Each row is 3 lines (folder/branch/date, aiTitle,
-# stitched last-3-prompt summary). Commas are stripped from labels because
-# termux-dialog -v splits rows on commas (the ceiling noted on menu()).
-pick_session() {
-  local ts cwd sid f title branch prompts summary folder when l1 l2 l3 label idx l kept=0
-  local -a LABELS=() SIDS=() CWDS=()
-  while IFS=$'\t' read -r ts cwd sid prompts; do
-    [ "$kept" -ge 20 ] && break
-    [ -d "$cwd" ] || continue
-    local -a matches=( "$HOME/.claude/projects/"*/"$sid.jsonl" )
-    f="${matches[0]}"; [ -e "$f" ] || continue        # transcript gone -> not resumable
-    [ "$(grep -c '"type":"assistant"' "$f" 2>/dev/null || true)" -ge "$MIN_TURNS" ] || continue
-    title=$(grep -m1 '"type":"ai-title"' "$f" 2>/dev/null | jq -r '.aiTitle // empty' 2>/dev/null || true)
-    branch=$(grep -m1 '"gitBranch":"[^"]' "$f" 2>/dev/null | jq -r '.gitBranch // empty' 2>/dev/null || true)
-    [ "$branch" = HEAD ] && branch=""                 # detached / non-repo -> no useful label
-    prompts=$(jq -r --arg s "$sid" 'select(.sessionId==$s) | (.display // "" | gsub("\n";" "))' "$HOME/.claude/history.jsonl" 2>/dev/null || true)
-    summary=$(printf '%s\n' "$prompts" | usable_prompts | stitch3)
-    [ -n "$title" ] || title=$(printf '%s\n' "$prompts" | usable_prompts | head -1)
-    folder=$(basename "$cwd")
-    when=$(date -d "@$(( ts / 1000 ))" '+%m-%d %H:%M' 2>/dev/null || true)
-    l1="$folder${branch:+ ($branch)}${when:+ · $when}"
-    l2="${title:-(untitled)}"
-    l3="${summary:+  ↳ $summary}"
-    label="$l1"$'\n'"$l2"
-    [ -n "$l3" ] && label="$label"$'\n'"$l3"
-    label="${label//,/;}"
-    LABELS+=("$label"); SIDS+=("$sid"); CWDS+=("$cwd"); kept=$((kept+1))
-  done < <(list_sessions)
-
-  if [ "${#LABELS[@]}" -eq 0 ]; then
-    termux-toast -s "No sessions to resume" 2>/dev/null || true
-    exit 0
-  fi
-  local csv=""
-  for l in "${LABELS[@]}"; do csv="${csv:+$csv,}$l"; done
-  idx=$(menu_index "Resume session" "$csv")
-  [ -n "$idx" ] || exit 0
-  SID="${SIDS[idx]}"; DIR="${CWDS[idx]}"
-}
-
 # recents_shown -> existing recents not equal to a pinned dir, one per line
 recents_shown() {
   [ -f "$RECENTS" ] || return 0
@@ -410,47 +351,6 @@ prune_recents() {
   mv "$tmp" "$RECENTS"
 }
 
-# browse ROOT -> chosen dir on stdout ("" if cancelled)
-browse() {
-  local root=$1 cur=$1 sel subs csv
-  while true; do
-    subs=$(list_subdirs "$cur")
-    csv="✅ Open here"
-    if [ "$cur" != "$root" ]; then csv="⬆ ..,$csv"; fi
-    if [ -n "$subs" ]; then csv="$csv,$(printf '%s' "$subs" | paste -sd,)"; fi
-    sel=$(menu "$cur" "$csv")
-    case "$sel" in
-      "")            return 0 ;;
-      "✅ Open here") printf '%s\n' "$cur"; return 0 ;;
-      "⬆ ..")        cur=$(go_up "$cur" "$root") ;;
-      *)             cur="$cur/$sel" ;;
-    esac
-  done
-}
-
-# pick_dir -> sets DIR (uses caller's locals)
-pick_dir() {
-  local csv="🔁 Resume session…" sel p recents_list
-  prune_recents
-  recents_list=$(recents_shown)
-  if [ -n "$recents_list" ]; then csv="${csv:+$csv,}$(printf '%s' "$recents_list" | paste -sd,)"; fi
-  for p in "${PINNED[@]}"; do csv="${csv:+$csv,}$p"; done
-  csv="${csv:+$csv,}📁 Browse Termux,📱 Browse Android"
-
-  sel=$(menu "Working directory" "$csv")
-  case "$sel" in
-    "")                exit 0 ;;
-    "🔁 Resume session…") pick_session; return ;;
-    "📁 Browse Termux") DIR=$(browse "$HOME") ;;
-    "📱 Browse Android") DIR=$(browse "$HOME/storage/shared") ;;
-    *)                 DIR="$sel" ;;
-  esac
-  if [ -z "$DIR" ]; then exit 0; fi   # browse cancelled
-}
-
-pick_model()  { MODEL=$(menu "Model" "$MODELS");   if [ -z "$MODEL" ];  then exit 0; fi; }
-pick_effort() { EFFORT=$(menu "Effort" "$EFFORTS"); if [ -z "$EFFORT" ]; then exit 0; fi; }
-
 # save_state -> update recents (MRU, capped)
 save_state() {
   mkdir -p "$CFG"
@@ -472,16 +372,6 @@ trust_dir() {
   else
     rm -f "$tmp"   # leave cfg untouched on jq error; dialog is a survivable fallback
   fi
-}
-
-# require_api -> fail fast if Termux:API isn't responding. The termux-api CLI
-# hangs forever broadcasting to a missing/broken app (looks like "nothing
-# happens"), so probe with a timeout instead of trusting package presence.
-require_api() {
-  timeout 3 termux-battery-status >/dev/null 2>&1 && return 0
-  echo "Termux:API not responding — install/reinstall the Termux:API app" >&2
-  echo "(same source as Termux; the 'termux-api' CLI package alone is not enough)." >&2
-  exit 1
 }
 
 # launch -> validate, then hand the terminal to claude. Reads DIR/MODEL/EFFORT/SID
@@ -551,65 +441,6 @@ launch() {
   exec "${cmd[@]}"
 }
 
-main() {
-  require_api
-  # PRESET_DIR (set by `--dir`, e.g. from the "Open Claude Code here" share
-  # target) skips the working-directory picker and starts in that folder.
-  local DIR="${PRESET_DIR:-}" MODEL="" EFFORT="" SID=""
-  if [ -n "$DIR" ]; then
-    if [ ! -d "$DIR" ]; then
-      termux-toast -s "Folder not found — $DIR" 2>/dev/null || true
-      echo "claude-launch: not a directory: $DIR" >&2
-      exit 1
-    fi
-  else
-    pick_dir
-  fi
-  if [ -z "$SID" ]; then          # resume carries its own model/effort + writes no state
-    pick_model
-    pick_effort
-    save_state
-  fi
-  # ponytail: folder + HH:MM + animal codename makes each session easy to spot;
-  # collides only if two same-minute launches draw the same animal (~1/16).
-  local rc_name
-  rc_name="$(basename "$DIR") $(date +%H:%M) ${ANIMALS[RANDOM % ${#ANIMALS[@]}]}"
-  local cmd
-  if [ -n "$SID" ]; then
-    cmd=(claude --resume "$SID" --dangerously-skip-permissions --remote-control "$rc_name")
-  else
-    cmd=(claude --model "$MODEL" --effort "$EFFORT" --dangerously-skip-permissions --remote-control "$rc_name")
-  fi
-  if [ -n "${CLAUDE_LAUNCH_DRYRUN:-}" ]; then
-    printf 'cd %q && %s\n' "$DIR" "${cmd[*]}"
-    exit 0
-  fi
-  trust_dir "$DIR"
-  cd "$DIR"
-  termux-toast -s "Claude '$rc_name' — open under Code sessions in the app" 2>/dev/null || true
-  # claude records its RC session at ~/.claude/sessions/<pid>.json once it
-  # registers; a background watcher reads bridgeSessionId there and deep-links
-  # into the app — `am start -d` cold-starts the app AND opens the exact thread.
-  # We exec claude so its pid == our shell pid ($$), naming the file. If the id
-  # never appears (~30s), the toast names the session as a backstop.
-  # ponytail: no app pre-boot — `monkey`/activity-launch don't work under
-  # Termux, and the deep-link launches the app itself. Bump the wait if the RC
-  # handshake ever runs longer than 30s.
-  local sf="$HOME/.claude/sessions/$$.json"
-  (
-    bid=""
-    for _ in $(seq 1 60); do
-      bid=$(bridge_id "$sf")
-      if [ -n "$bid" ]; then
-        am start -a android.intent.action.VIEW -d "https://claude.ai/code/$bid" >/dev/null 2>&1 || true
-        break
-      fi
-      sleep 0.5
-    done
-  ) &
-  exec "${cmd[@]}"
-}
-
 case "${1:-}" in
   --selftest) selftest ;;
   --state)    emit_state ;;
@@ -617,6 +448,14 @@ case "${1:-}" in
     shift
     if [ -z "${1:-}" ]; then
       echo "claude-launch: --ls requires a path" >&2
+      exit 2
+    fi
+    # list_subdirs is glob+nullglob+sort, so a nonexistent path yields empty
+    # output and exit 0 — byte-identical to a real directory with no subfolders.
+    # The app's error table maps empty --ls to "no subfolders", so without this
+    # guard a deleted folder is reported as an empty one. Distinguish them here.
+    if [ ! -d "$1" ]; then
+      echo "claude-launch: not a directory: $1" >&2
       exit 2
     fi
     list_subdirs "$1"
@@ -636,14 +475,30 @@ case "${1:-}" in
     done
     launch
     ;;
+  # Legacy alias. The shipped APK sends `--dir <path>` (Setup.java:117-118) and
+  # its result mapping reports NONZERO and TIMEOUT as success, so deleting this
+  # verb would break the share sheet behind a cheerful "on its way" toast for
+  # anyone who updates the script before sideloading the new APK — the common
+  # direction, since install.sh is the documented update channel.
+  # opus/high because the script cannot read the app's SharedPreferences.
   --dir)
     shift
-    PRESET_DIR="${1:-}"
-    if [ -z "$PRESET_DIR" ]; then
+    DIR="${1:-}"
+    if [ -z "$DIR" ]; then
       echo "claude-launch: --dir requires a path" >&2
       exit 2
     fi
-    main
+    MODEL=opus; EFFORT=high; SID=""
+    launch
     ;;
-  *)          main ;;
+  "") printf '%s\n' "$MIGRATION_NOTICE" ;;
+  # Never fall through to interactive code: a stray argument reaching the old
+  # picker chain from a background RUN_COMMAND would start a headless claude and
+  # mutate the trust list behind a screen still showing a spinner. 2 is the code
+  # the --dir arm already used for bad arguments.
+  *)
+    echo "claude-launch: unknown argument '$1'" >&2
+    printf '%s\n' "$MIGRATION_NOTICE" >&2
+    exit 2
+    ;;
 esac
