@@ -80,6 +80,13 @@ public class LaunchActivity extends Activity {
      *  hard-code. */
     private boolean userPicked;
 
+    private static final String TERMUX_HOME = "/data/data/com.termux/files/home";
+    private static final String ANDROID_HOME = "/storage/emulated/0";
+
+    /** Non-null while a Browse view is on screen. */
+    private String browsingAt;
+    private String browsingRoot;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -264,7 +271,9 @@ public class LaunchActivity extends Activity {
         super.onResume();
         // Also covers returning from SetupActivity after the user fixed whatever
         // sent them there — without this the screen sits on "Loading…" forever.
-        if (!launching) {
+        // browsingAt guards a Browse view in progress: resuming from another app or
+        // dismissing a dialog must not silently replace it with the recents list.
+        if (!launching && browsingAt == null) {
             refresh();
         }
     }
@@ -407,6 +416,16 @@ public class LaunchActivity extends Activity {
                 }
             });
         }
+        Views.button(this, folderList, "📁 Browse Termux", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                browse(TERMUX_HOME, TERMUX_HOME);
+            }
+        });
+        Views.button(this, folderList, "📱 Browse Android", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                browse(ANDROID_HOME, ANDROID_HOME);
+            }
+        });
         updateLaunchLabel();
     }
 
@@ -419,6 +438,91 @@ public class LaunchActivity extends Activity {
     void select(String dir) {
         selectedDir = dir;
         updateLaunchLabel();
+    }
+
+    /**
+     * One --ls round trip per level. Upward navigation is client-side: the script
+     * has no go_up, and clamping to the root here is presentation, not security —
+     * the app shares Termux's UID either way.
+     */
+    private void browse(final String dir, final String root) {
+        browsingAt = dir;
+        browsingRoot = root;
+        setBusy("Reading " + dir + "…");
+        Setup.ls(this, dir, new Setup.ResultListener() {
+            @Override public void onResult(int code, String stdout, String detail) {
+                if (dead || isFinishing() || !dir.equals(browsingAt)) {
+                    return;   // a newer browse superseded this one
+                }
+                if (code != Setup.OK) {
+                    String msg = detail == null || detail.isEmpty()
+                            ? "Couldn’t read that folder."
+                            : detail.trim();
+                    Toast.makeText(LaunchActivity.this, msg, Toast.LENGTH_SHORT).show();
+                    browsingAt = null;
+                    showFolders();
+                    return;
+                }
+                showBrowse(dir, root, stdout);
+            }
+        });
+    }
+
+    private void showBrowse(final String dir, final String root, String stdout) {
+        folderList.removeAllViews();
+        folderList.addView(Views.text(this, dir, 13, Views.GREY, Typeface.NORMAL));
+
+        Views.button(this, folderList, "✅ Open here", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                browsingAt = null;
+                select(dir);
+                showFolders();
+            }
+        });
+        if (!dir.equals(root)) {
+            Views.button(this, folderList, "⬆ ..", new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    browse(parentOf(dir, root), root);
+                }
+            });
+        }
+
+        boolean any = false;
+        for (String name : stdout.split("\n")) {
+            if (name.isEmpty()) {
+                continue;
+            }
+            any = true;
+            final String child = dir + "/" + name;
+            Views.button(this, folderList, name, new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    browse(child, root);
+                }
+            });
+        }
+        if (!any) {
+            folderList.addView(Views.text(this, "no subfolders", 15, Views.GREY, Typeface.NORMAL));
+        }
+    }
+
+    /** Parent of dir, never above root. */
+    private static String parentOf(String dir, String root) {
+        int cut = dir.lastIndexOf('/');
+        if (cut <= 0) {
+            return root;
+        }
+        String parent = dir.substring(0, cut);
+        return parent.startsWith(root) ? parent : root;
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (browsingAt != null) {
+            browsingAt = null;
+            showFolders();
+            return;
+        }
+        super.onBackPressed();
     }
 
     /** The button always names the full resolved target — nothing launches blind. */
