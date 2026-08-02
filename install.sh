@@ -5,9 +5,8 @@
 #   pkg install -y curl && curl -fsSL \
 #     https://github.com/ptrkhh/termux-claude-autoremote/releases/latest/download/install.sh | bash
 #
-# Packages, launcher, widget shortcut, and the allow-external-apps property the
-# "Open Claude Code here" share app needs. Re-running it is safe — that is also
-# how you update.
+# Packages, launcher, and the allow-external-apps property the app needs to
+# drive it. Re-running it is safe — that is also how you update.
 #
 # This file is attached verbatim to each release, alongside the claude-launch it
 # downloads, so both come from the same published release.
@@ -28,19 +27,17 @@ say ""
 say "Installing Claude Auto Remote…"
 
 # ---------- 1. packages ----------
-# jq/coreutils are usually present in a fresh Termux; termux-api (the CLI half
-# of Termux:API) never is. Only shell out to pkg for what is actually missing so
-# a re-run is instant.
+# jq/coreutils are usually present in a fresh Termux. Only shell out to pkg for
+# what is actually missing so a re-run is instant.
 missing=""
-command -v jq            >/dev/null 2>&1 || missing="$missing jq"
-command -v termux-dialog >/dev/null 2>&1 || missing="$missing termux-api"
-command -v timeout       >/dev/null 2>&1 || missing="$missing coreutils"
+command -v jq      >/dev/null 2>&1 || missing="$missing jq"
+command -v timeout >/dev/null 2>&1 || missing="$missing coreutils"
 if [ -n "$missing" ]; then
   say "  installing:$missing"
   # shellcheck disable=SC2086
   pkg install -y $missing >/dev/null
 fi
-ok "packages (jq, termux-api, coreutils)"
+ok "packages (jq, coreutils)"
 
 # ---------- 2. launcher ----------
 # Downloaded rather than embedded so this file stays readable before you pipe it
@@ -58,20 +55,28 @@ chmod +x "$HOME/bin/claude-launch"
 trap - EXIT
 ok "launcher (~/bin/claude-launch)"
 
-# ---------- 3. widget shortcut ----------
-# Two lines, so it is written here rather than shipped as its own file. Quoted
-# heredoc: $HOME must stay literal and be expanded when the shortcut runs.
-mkdir -p "$HOME/.shortcuts"
-cat > "$HOME/.shortcuts/Claude" <<'SHORTCUT'
-#!/data/data/com.termux/files/usr/bin/bash
-exec "$HOME/bin/claude-launch"
-SHORTCUT
-chmod +x "$HOME/.shortcuts/Claude"
-ok "widget shortcut (~/.shortcuts/Claude)"
+# ---------- 3. retire the widget shortcut ----------
+# The change here is that we no longer CREATE this shortcut. An existing one is
+# left in place and needs no edit: its body is already `exec claude-launch` with
+# no arguments, and bare invocation now prints the migration notice, so a
+# stranded widget tap explains itself for free.
+#
+# Deleting the file instead would be worse: the tap would then land on a missing
+# script and show a raw shell error, and the notice — which only exists in the
+# script this same run installs — would have no surface to appear on. Once
+# Termux:Widget is uninstalled Android disables its pinned shortcuts anyway, so
+# this only has to cover the window between updating the script and removing the
+# app.
+if [ -f "$HOME/.shortcuts/Claude" ]; then
+  chmod +x "$HOME/.shortcuts/Claude"
+  ok "widget shortcut left in place; it now prints the migration notice"
+fi
 
 # ---------- 4. allow-external-apps ----------
-# Needed only by the "Open Claude Code here" share-sheet app, but setting it now
-# means that app is a one-tap install later instead of a five-step ordeal.
+# Required. Without this property, RUN_COMMAND intents from the app are
+# silently refused by Termux — there is no error, the app just never launches
+# anything. This is not a convenience setting; it is the one thing that makes
+# the app work at all.
 props="$HOME/.termux/termux.properties"
 mkdir -p "$HOME/.termux"
 [ -f "$props" ] || : > "$props"
@@ -93,12 +98,6 @@ termux-reload-settings >/dev/null 2>&1 || true
 # ---------- 5. advisory checks ----------
 say ""
 say "Checks:"
-if timeout 3 termux-battery-status >/dev/null 2>&1; then
-  ok "Termux:API app responding"
-else
-  warn "Termux:API app not responding — install the Termux:API *app* from the"
-  warn "  same source as Termux (the termux-api package alone is not enough)."
-fi
 if command -v claude >/dev/null 2>&1; then
   ok "Claude Code installed"
 else
@@ -111,9 +110,12 @@ fi
 # ---------- 6. what's left, and only what's left ----------
 say ""
 say "Done. Next:"
-say "  • Long-press your homescreen → Widgets → Termux:Widget → pick \"Claude\"."
 if [ "$restart_needed" = 1 ]; then
   say "  • Using the \"Open Claude Code here\" share app? Fully close Termux"
   say "    (swipe it from Recents, or Exit from its notification) and reopen it."
 fi
+say ""
+say "If the app still shows Termux:API and Termux:Widget steps and a homescreen-"
+say "widget step, it is the old version — install the new APK from the latest"
+say "release, then you can uninstall both plugin apps."
 say ""
