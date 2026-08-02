@@ -45,6 +45,8 @@ public class LaunchActivity extends Activity {
     private static final String KEY_SELECTED_DIR = "selectedDir";
     private static final String KEY_MODEL_SEL = "modelSel";
     private static final String KEY_EFFORT_SEL = "effortSel";
+    private static final String KEY_RESUME_SID = "resumeSid";
+    private static final String KEY_RESUME_TITLE = "resumeTitle";
 
     private LinearLayout folderList;
     private RadioGroup modelGroup;
@@ -55,6 +57,12 @@ public class LaunchActivity extends Activity {
     private final List<String> folders = new ArrayList<>();
     private String selectedDir;
     private boolean claudePresent = true;
+
+    /** Non-null once a session is picked via Resume; suppresses model/effort —
+     *  the script skips its grammar check when --resume is set, so both chip
+     *  groups must read as inert while this is set. Cleared by select(dir). */
+    private String resumeSid;
+    private String resumeTitle;
 
     /** True from the moment Launch fires until the result lands. Guards against a
      *  second tap: showFolders() -> updateLaunchLabel() would otherwise re-enable
@@ -139,6 +147,8 @@ public class LaunchActivity extends Activity {
             firstCheck = savedInstanceState.getBoolean(KEY_FIRST_CHECK, true);
             userPicked = savedInstanceState.getBoolean(KEY_USER_PICKED);
             selectedDir = savedInstanceState.getString(KEY_SELECTED_DIR);
+            resumeSid = savedInstanceState.getString(KEY_RESUME_SID);
+            resumeTitle = savedInstanceState.getString(KEY_RESUME_TITLE);
             String m = savedInstanceState.getString(KEY_MODEL_SEL);
             String e = savedInstanceState.getString(KEY_EFFORT_SEL);
             if (m != null && !m.isEmpty()) {
@@ -150,6 +160,9 @@ public class LaunchActivity extends Activity {
         }
         fillRadios(modelGroup, splitWords("opus sonnet haiku fable"), initialModel);
         fillRadios(effortGroup, splitWords("low medium high xhigh max"), initialEffort);
+        // fillRadios rebuilds the RadioButtons from scratch, which would otherwise
+        // silently re-enable a resumed session's chips across a rotation.
+        setChipsEnabled(resumeSid == null);
 
         if (savedInstanceState == null) {
             String preset = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_DIR);
@@ -172,6 +185,12 @@ public class LaunchActivity extends Activity {
         out.putString(KEY_SELECTED_DIR, selectedDir);
         out.putString(KEY_MODEL_SEL, checked(modelGroup));
         out.putString(KEY_EFFORT_SEL, checked(effortGroup));
+        // Without these a rotation mid-resume-pick would restore selectedDir but
+        // not resumeSid: the button would relabel to "Launch … · model · effort"
+        // and a tap would fire Setup.launch instead of Setup.resume — exactly the
+        // silent-wrong-action bug this feature exists to avoid.
+        out.putString(KEY_RESUME_SID, resumeSid);
+        out.putString(KEY_RESUME_TITLE, resumeTitle);
     }
 
     /** A horizontal RadioGroup — the default is vertical, which is not a chip row. */
@@ -409,6 +428,9 @@ public class LaunchActivity extends Activity {
         String curEffort = userPicked ? checked(effortGroup) : p.getString(KEY_EFFORT, efforts.get(0));
         fillRadios(modelGroup, models, curModel);
         fillRadios(effortGroup, efforts, curEffort);
+        // Same reason as the placeholder fillRadios in onCreate: rebuilding the
+        // chips wipes whatever enabled state they had.
+        setChipsEnabled(resumeSid == null);
 
         claudePresent = claude;
         if (!claudePresent) {
@@ -432,6 +454,11 @@ public class LaunchActivity extends Activity {
     /** Rebuilds the folder list. Task 12 adds the Browse rows, Task 14 adds Resume. */
     void showFolders() {
         folderList.removeAllViews();
+        Views.button(this, folderList, "🔁 Resume session…", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                loadSessions();
+            }
+        });
         for (final String dir : folders) {
             Views.button(this, folderList, dir, new View.OnClickListener() {
                 @Override public void onClick(View v) {
@@ -458,8 +485,139 @@ public class LaunchActivity extends Activity {
         folderList.addView(Views.text(this, message, 15, Views.GREY, Typeface.NORMAL));
     }
 
+    /**
+     * --sessions spawns ~100 short-lived processes on an ARM device (hence its own
+     * 12s budget in Setup), so this mirrors onState's full error routing rather
+     * than the shorter brief version: a stale RUN_COMMAND grant or a missing
+     * Termux install can surface here exactly as it can from --state, and folding
+     * those into "couldn't load, try again" would hide a fixable setup problem
+     * behind a retry loop that can never succeed.
+     */
+    private void loadSessions() {
+        setBusy("Loading sessions…");
+        Setup.sessions(this, new Setup.ResultListener() {
+            @Override public void onResult(int code, String stdout, String detail) {
+                if (dead || isFinishing()) {
+                    return;
+                }
+                switch (code) {
+                    case Setup.OK:
+                        showSessions(stdout);
+                        return;
+                    case Setup.NO_TERMUX:
+                        route("Termux isn’t installed — step 1.");
+                        return;
+                    case Setup.NO_PERMISSION:
+                        if (!permissionAsked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            permissionAsked = true;
+                            requestPermissions(new String[]{Setup.PERM_RUN_COMMAND}, REQ_RUN_COMMAND);
+                        } else {
+                            showError("Termux’s “Run commands” permission is needed — open setup to grant it.");
+                        }
+                        return;
+                    case Setup.REFUSED:
+                        route("Termux refused the command — finish setup, then fully close "
+                                + "and reopen Termux.");
+                        return;
+                    default:
+                        // NONZERO or TIMEOUT: not necessarily version skew — a slow
+                        // device or a transient hiccup among ~100 spawned processes.
+                        // Offer a retry in place rather than routing to setup.
+                        setBusy("Couldn’t load sessions — try again.");
+                        Views.button(LaunchActivity.this, folderList, "Back", new View.OnClickListener() {
+                            @Override public void onClick(View v) {
+                                showFolders();
+                            }
+                        });
+                        return;
+                }
+            }
+        });
+    }
+
+    /**
+     * Rows are 7 columns: sid, cwd, folder, branch, when, title, summary.
+     *
+     * <p>split("\t", -1) is required, not stylistic: Java's split discards
+     * trailing empty fields, and `summary` is empty whenever the script's
+     * stitch3 produces nothing — ordinary input, no skew. Without the -1 those
+     * rows arrive at length 6 and indexing throws.
+     *
+     * <p>Zero lines is emptiness. One or more lines of which none conforms is
+     * skew, routed the same way as the other launcher-out-of-date cases so a
+     * repeat offender renders in place instead of bouncing back into setup.
+     * Mixed arity is neither: conforming rows render, the rest are dropped
+     * silently, because a malformed row means the script's sanitizer failed —
+     * a bug the user cannot act on.
+     */
+    private void showSessions(String stdout) {
+        folderList.removeAllViews();
+        int seen = 0;
+        int kept = 0;
+        for (String line : stdout.split("\n")) {
+            if (line.isEmpty()) {
+                continue;
+            }
+            seen++;
+            final String[] f = line.split("\t", -1);
+            if (f.length != 7) {
+                continue;
+            }
+            kept++;
+            String label = f[2]
+                    + (f[3].isEmpty() ? "" : " (" + f[3] + ")")
+                    + (f[4].isEmpty() ? "" : " · " + f[4])
+                    + "\n" + (f[5].isEmpty() ? "(untitled)" : f[5])
+                    + (f[6].isEmpty() ? "" : "\n  ↳ " + f[6]);
+            Views.button(this, folderList, label, new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    pickSession(f[0], f[1], f[5]);
+                }
+            });
+        }
+        if (seen == 0) {
+            folderList.addView(Views.text(this, "No sessions to resume", 15, Views.GREY,
+                    Typeface.NORMAL));
+        } else if (kept == 0) {
+            route("Launcher is out of date — run the step 2 command.");
+            return;
+        }
+        Views.button(this, folderList, "Back", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showFolders();
+            }
+        });
+    }
+
+    private void pickSession(String sid, String cwd, String title) {
+        resumeSid = sid;
+        resumeTitle = title.isEmpty() ? sid : title;
+        selectedDir = cwd;
+        setChipsEnabled(false);
+        showFolders();
+    }
+
+    /**
+     * A resumed session carries its own model and effort — the script ignores
+     * both when --resume is set. Leaving the chips live would let someone set an
+     * effort, hit Launch, and reasonably believe it applied.
+     */
+    private void setChipsEnabled(boolean enabled) {
+        for (int i = 0; i < modelGroup.getChildCount(); i++) {
+            modelGroup.getChildAt(i).setEnabled(enabled);
+        }
+        for (int i = 0; i < effortGroup.getChildCount(); i++) {
+            effortGroup.getChildAt(i).setEnabled(enabled);
+        }
+    }
+
     void select(String dir) {
         selectedDir = dir;
+        // Picking a folder means starting fresh — a resume choice from a moment
+        // ago must not silently survive underneath a new selection.
+        resumeSid = null;
+        resumeTitle = null;
+        setChipsEnabled(true);
         updateLaunchLabel();
     }
 
@@ -554,7 +712,9 @@ public class LaunchActivity extends Activity {
         }
         boolean ready = selectedDir != null && claudePresent;
         launchButton.setEnabled(ready);
-        if (selectedDir == null) {
+        if (resumeSid != null) {
+            launchButton.setText("Resume: " + resumeTitle);
+        } else if (selectedDir == null) {
             launchButton.setText("Pick a folder");
         } else {
             launchButton.setText("Launch  " + new File(selectedDir).getName()
@@ -564,13 +724,24 @@ public class LaunchActivity extends Activity {
 
     private void fire() {
         final String dir = selectedDir;
-        final String model = checked(modelGroup);
-        final String effort = checked(effortGroup);
-        if (dir == null || model.isEmpty() || effort.isEmpty()) {
+        if (dir == null) {
             return;
         }
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putString(KEY_MODEL, model).putString(KEY_EFFORT, effort).apply();
+        final String model = checked(modelGroup);
+        final String effort = checked(effortGroup);
+        // A resume carries no model/effort of its own — the script skips its
+        // grammar check when --resume is set — so the chip-emptiness guard below
+        // only applies to a plain launch.
+        if (resumeSid == null && (model.isEmpty() || effort.isEmpty())) {
+            return;
+        }
+        if (resumeSid == null) {
+            // The user chose neither model nor effort on a resume; writing
+            // whatever the (disabled, stale) chips happen to read would corrupt
+            // the preference used to pre-select chips on the next plain launch.
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putString(KEY_MODEL, model).putString(KEY_EFFORT, effort).apply();
+        }
 
         launching = true;
         launchButton.setEnabled(false);
@@ -579,7 +750,7 @@ public class LaunchActivity extends Activity {
 
         // The activity stays alive for ERROR_WINDOW_MS. Finishing here would mean
         // every error branch below fires into a destroyed activity.
-        Setup.launch(this, dir, model, effort, new Setup.ResultListener() {
+        Setup.ResultListener done = new Setup.ResultListener() {
             @Override public void onResult(int code, String stdout, String detail) {
                 if (dead || isFinishing()) {
                     return;
@@ -613,9 +784,15 @@ public class LaunchActivity extends Activity {
                         }
                         break;
                     default:
-                        // NONZERO foreground: bad folder, rejected model/effort.
+                        // NONZERO foreground: bad folder, rejected model/effort, or
+                        // (on resume) a session id the script no longer recognizes.
+                        // Drop back to a clean pick rather than leaving a resume
+                        // selection pointed at whatever just failed.
                         launching = false;
                         selectedDir = null;
+                        resumeSid = null;
+                        resumeTitle = null;
+                        setChipsEnabled(true);
                         updateLaunchLabel();
                         String msg = detail == null || detail.isEmpty()
                                 ? "Couldn’t start — check the folder still exists."
@@ -625,7 +802,12 @@ public class LaunchActivity extends Activity {
                         break;
                 }
             }
-        });
+        };
+        if (resumeSid != null) {
+            Setup.resume(this, dir, resumeSid, done);
+        } else {
+            Setup.launch(this, dir, model, effort, done);
+        }
     }
 
     @Override
