@@ -5,7 +5,6 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -16,19 +15,11 @@ import java.util.ArrayList;
 
 /**
  * Invisible share-sheet target. Receives a shared file, works out the folder it
- * lives in ("here"), and asks Termux to run {@code ~/bin/claude-launch --dir
- * <folder>} — which then shows the model/effort pickers and starts Claude Code
- * in Remote Control mode.
- *
- * <p>If Termux rejects the hand-off, this opens the setup screen rather than
- * failing with a toast the user can't act on.
+ * lives in ("here"), and opens {@link LaunchActivity} with that folder
+ * preselected. Everything else — permissions, model/effort, error routing — is
+ * the launch screen's job.
  */
 public class ShareActivity extends Activity {
-
-    private static final int REQ_RUN_COMMAND = 1;
-
-    // Resolved between onCreate and the permission callback.
-    private String pendingDir;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -55,28 +46,12 @@ public class ShareActivity extends Activity {
             return;
         }
 
-        pendingDir = dir.getAbsolutePath();
-
-        // Ask for Termux's Run-commands permission the first time; the system
-        // shows the grant dialog over this (invisible) activity.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                && checkSelfPermission(Setup.PERM_RUN_COMMAND) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Setup.PERM_RUN_COMMAND}, REQ_RUN_COMMAND);
-            return; // continue in onRequestPermissionsResult
-        }
-
-        launchClaude(pendingDir);
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        if (requestCode == REQ_RUN_COMMAND) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                launchClaude(pendingDir);
-            } else {
-                openSetup("Termux’s “Run commands” permission is needed — step 3.");
-            }
-        }
+        // Hand off rather than launching here: one launch path to build and test,
+        // and the user sees and can change what is about to run.
+        startActivity(new Intent(this, LaunchActivity.class)
+                .putExtra(LaunchActivity.EXTRA_DIR, dir.getAbsolutePath())
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        finish();
     }
 
     /** Pulls the first usable content/file Uri out of a SEND or SEND_MULTIPLE intent. */
@@ -108,44 +83,6 @@ public class ShareActivity extends Activity {
             return intent.getParcelableExtra(key, Uri.class);
         }
         return intent.getParcelableExtra(key);
-    }
-
-    /**
-     * Hands the folder to Termux. Stays alive (invisibly) just long enough to
-     * catch a rejection: a timeout here means the session started fine, since
-     * Termux only reports a foreground command's result once it exits.
-     */
-    private void launchClaude(final String dir) {
-        Toast.makeText(this, "Claude → " + new File(dir).getName(), Toast.LENGTH_SHORT).show();
-        Setup.launch(this, dir, "opus", "high", new Setup.ResultListener() {
-            @Override public void onResult(int code, String stdout, String detail) {
-                switch (code) {
-                    case Setup.NO_TERMUX:
-                        openSetup("Termux isn’t installed — step 1.");
-                        break;
-                    case Setup.NO_PERMISSION:
-                        openSetup("Termux’s “Run commands” permission is needed — step 3.");
-                        break;
-                    case Setup.REFUSED:
-                        // Termux's own gate: allow-external-apps, which only
-                        // takes effect after a full restart of Termux.
-                        openSetup("Termux refused the command — finish setup, then fully "
-                                + "close and reopen Termux.");
-                        break;
-                    default: // OK / NONZERO / TIMEOUT — the session is on its way
-                        finish();
-                        break;
-                }
-            }
-        });
-    }
-
-    /** Shows why the hand-off failed and lands the user on the screen that fixes it. */
-    private void openSetup(String why) {
-        Toast.makeText(this, why, Toast.LENGTH_LONG).show();
-        startActivity(new Intent(this, SetupActivity.class)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        finish();
     }
 
     /**
