@@ -160,6 +160,23 @@ selftest() {
   [ "$out" = "real work" ]                                       || { echo "stitch suppress FAIL: [$out]"; exit 1; }
   out=$(printf '/resume\nok\nexit\n' | usable_prompts | stitch3)
   [ -z "$out" ]                                                  || { echo "stitch empty FAIL: [$out]"; exit 1; }
+  t=$(mktemp -d); mkdir -p "$t/work" "$t/git" "$t/.config/claude-launch"
+  printf '%s\n' "$t/work" "$t/gone" > "$t/.config/claude-launch/recents"
+  out=$(HOME="$t" "$BASH" "$0" --state)
+  printf '%s\n' "$out" | grep -qx "recents$(printf '\t')$t/work" || { echo "state recents FAIL: [$out]"; exit 1; }
+  printf '%s\n' "$out" | grep -q  "$t/gone"                       && { echo "state emitted missing recent FAIL"; exit 1; }
+  printf '%s\n' "$out" | grep -qx "pinned$(printf '\t')$t"        || { echo "state pinned home FAIL: [$out]"; exit 1; }
+  printf '%s\n' "$out" | grep -qx "pinned$(printf '\t')$t/git"    || { echo "state pinned git FAIL: [$out]"; exit 1; }
+  printf '%s\n' "$out" | grep -q  "storage"                       && { echo "state emitted absent pinned FAIL"; exit 1; }
+  printf '%s\n' "$out" | grep -qx "models$(printf '\t')opus sonnet haiku fable" || { echo "state models FAIL: [$out]"; exit 1; }
+  printf '%s\n' "$out" | grep -qx "efforts$(printf '\t')low medium high xhigh max" || { echo "state efforts FAIL: [$out]"; exit 1; }
+  [ "$(printf '%s\n' "$out" | grep -c '^claude')" -eq 1 ] || { echo "state claude tag count FAIL: [$out]"; exit 1; }
+  out=$(PATH=/nonexistent HOME="$t" "$BASH" "$0" --state | grep '^claude')
+  [ "$out" = "claude$(printf '\t')0" ] || { echo "state claude-absent FAIL: [$out]"; exit 1; }
+  printf '%s\n' "$t/work" "$t/gone" > "$t/.config/claude-launch/recents"
+  HOME="$t" "$BASH" "$0" --state >/dev/null
+  [ "$(wc -l < "$t/.config/claude-launch/recents")" -eq 2 ] || { echo "state must not prune recents FAIL"; exit 1; }
+  rm -rf "$t"
   echo "selftest OK"
 }
 
@@ -257,6 +274,32 @@ recents_shown() {
     done
     if [ "$skip" = 0 ]; then printf '%s\n' "$line"; fi
   done < "$RECENTS"
+}
+
+# emit_state -> the launch screen's opening payload, as tagged lines.
+#
+# Read-only by contract. It deliberately does NOT call prune_recents:
+# recents_shown already skips paths that no longer exist, so pruning would change
+# the emitted tags by nothing, and its only effect is rewriting $RECENTS. The app
+# re-fires --state on every onCreate (including rotation), so pruning here would
+# permanently drop any recent whose path is *transiently* absent — an unmounted
+# ~/storage/*, a revoked storage permission — on every app open.
+#
+# `claude` is always emitted, 1 or 0. Omitting it when claude is missing would
+# trip the app's required-tag check and report a healthy launcher as version skew.
+emit_state() {
+  local p line
+  recents_shown | while IFS= read -r line; do printf 'recents\t%s\n' "$line"; done
+  for p in "${PINNED[@]}"; do
+    if [ -d "$p" ]; then printf 'pinned\t%s\n' "$p"; fi
+  done
+  printf 'models\t%s\n' "${MODELS//,/ }"
+  printf 'efforts\t%s\n' "${EFFORTS//,/ }"
+  if command -v claude >/dev/null 2>&1; then
+    printf 'claude\t1\n'
+  else
+    printf 'claude\t0\n'
+  fi
 }
 
 # prune_recents -> rewrite recents keeping only dirs that still exist
@@ -405,6 +448,7 @@ main() {
 
 case "${1:-}" in
   --selftest) selftest ;;
+  --state)    emit_state ;;
   --dir)
     shift
     PRESET_DIR="${1:-}"
