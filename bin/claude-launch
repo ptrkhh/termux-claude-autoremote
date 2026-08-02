@@ -15,9 +15,9 @@ EFFORTS="low,medium,high,xhigh,max"
 # print this, because the shortcut is the surface the tap actually lands on.
 MIGRATION_NOTICE="claude-launch is now driven by the Open Claude Code Here app.
 
-Open the app to pick a working directory, model and effort. Once the new APK is
-installed you can uninstall Termux:Widget and Termux:API, and remove this
-shortcut."
+Install the latest APK from the project's releases page, then open it to pick a
+working directory, model and effort. Once it is installed you can uninstall
+Termux:Widget and Termux:API, and remove this shortcut."
 # codenames make each Remote Control session easy to spot in the app
 ANIMALS=(cat dog fox owl bear wolf lion tiger panda koala otter seal hawk duck frog deer)
 PINNED=(
@@ -226,6 +226,25 @@ selftest() {
   expect_rc 2 "$BASH" "$0" --dir
   # a nonexistent path must be distinguishable from an empty directory
   expect_rc 2 "$BASH" "$0" --ls "$t/definitely-not-here"
+  # --ls must distinguish "unreadable" from "empty" (skipped when running as root,
+  # which bypasses permission bits entirely)
+  mkdir -p "$t/noread"; chmod 000 "$t/noread"
+  if [ "$(id -u)" -ne 0 ]; then
+    expect_rc 2 "$BASH" "$0" --ls "$t/noread"
+  fi
+  chmod 755 "$t/noread"
+  # a regular file is not a directory
+  touch "$t/afile"; expect_rc 2 "$BASH" "$0" --ls "$t/afile"
+  # the legacy --dir alias must reject a nonexistent path too
+  expect_rc 2 "$BASH" "$0" --dir "$t/definitely-not-here"
+  # tab-bearing paths must not reach the wire format
+  mkdir -p "$t/.config/claude-launch"
+  printf '%s\n' "$t/plain" > "$t/.config/claude-launch/recents"
+  mkdir -p "$t/plain"
+  tabdir="$t/has$(printf '\t')tab"; mkdir -p "$tabdir"
+  printf '%s\n' "$tabdir" >> "$t/.config/claude-launch/recents"
+  out=$(HOME="$t" "$BASH" "$0" --state | grep -c '^recents')
+  [ "$out" -eq 1 ] || { echo "--state must drop tab-bearing recents FAIL: [$out]"; exit 1; }
   out=$("$BASH" "$0")
   case "$out" in
     *"Open Claude Code Here"*) ;;
@@ -279,6 +298,9 @@ emit_sessions() {
   while IFS=$'\t' read -r ts cwd sid prompts; do
     [ "$kept" -ge 20 ] && break
     [ -d "$cwd" ] || continue
+    # same reasoning as emit_state: a TAB in cwd would shift every later column,
+    # and sanitizing it would yield a path that cannot be cd'd to.
+    [ "$cwd" = "${cwd//$'\t'/}" ] || continue
     local -a matches=( "$HOME/.claude/projects/"*/"$sid.jsonl" )
     f="${matches[0]}"; [ -e "$f" ] || continue        # transcript gone -> not resumable
     # -m stops the read at MIN_TURNS matches instead of scanning a whole
@@ -327,9 +349,14 @@ recents_shown() {
 # trip the app's required-tag check and report a healthy launcher as version skew.
 emit_state() {
   local p line
-  recents_shown | while IFS= read -r line; do printf 'recents\t%s\n' "$line"; done
+  # A path containing a TAB would shift the wire format's columns, and it cannot
+  # be sanitized away — a sanitized path no longer exists on disk. Drop it, the
+  # same call made for newline-bearing names in list_subdirs.
+  recents_shown | while IFS= read -r line; do
+    if [ "$line" = "${line//$'\t'/}" ]; then printf 'recents\t%s\n' "$line"; fi
+  done
   for p in "${PINNED[@]}"; do
-    if [ -d "$p" ]; then printf 'pinned\t%s\n' "$p"; fi
+    if [ -d "$p" ] && [ "$p" = "${p//$'\t'/}" ]; then printf 'pinned\t%s\n' "$p"; fi
   done
   printf 'models\t%s\n' "${MODELS//,/ }"
   printf 'efforts\t%s\n' "${EFFORTS//,/ }"
@@ -384,8 +411,9 @@ launch() {
     echo "claude-launch: not a directory: $DIR" >&2
     exit 2
   fi
-  # Deleting pick_model/pick_effort deleted the only thing that enforced this:
-  # those functions could not emit a non-member and exited 0 on empty.
+  # The interactive model/effort pickers, deleted in the cutover, were the only
+  # thing that enforced this: those functions could not emit a non-member and
+  # exited 0 on empty.
   if [ -z "$SID" ]; then
     if ! valid_choice "$MODEL" "$MODELS"; then
       echo "claude-launch: invalid --model '$MODEL' (want one of $MODELS)" >&2
@@ -456,6 +484,13 @@ case "${1:-}" in
     # guard a deleted folder is reported as an empty one. Distinguish them here.
     if [ ! -d "$1" ]; then
       echo "claude-launch: not a directory: $1" >&2
+      exit 2
+    fi
+    # -d alone is not enough: an unreadable or unsearchable directory globs to
+    # nothing, which is indistinguishable from an empty one. Scoped storage makes
+    # this reachable on Android (~/storage/shared/Android/data and siblings).
+    if [ ! -r "$1" ] || [ ! -x "$1" ]; then
+      echo "claude-launch: cannot read directory: $1" >&2
       exit 2
     fi
     list_subdirs "$1"
