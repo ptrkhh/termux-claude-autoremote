@@ -54,12 +54,32 @@ go_up() {
   esac
 }
 
-# list_subdirs PATH -> immediate subdirectory basenames, sorted (dotdirs skipped)
+# list_subdirs PATH -> immediate subdirectory basenames, sorted (dotdirs skipped).
+# Names containing a newline are dropped: newline frames the --ls wire format, so
+# such a name would reach the app as two rows that both fail [ -d ]. Newline-named
+# directories are legal on Android, so this is reachable, not theoretical.
 list_subdirs() (
   shopt -s nullglob
-  local d
-  for d in "$1"/*/; do d=${d%/}; printf '%s\n' "${d##*/}"; done | sort
+  local d name
+  for d in "$1"/*/; do
+    d=${d%/}; name=${d##*/}
+    if [ "$name" = "${name//$'\n'/}" ]; then printf '%s\n' "$name"; fi
+  done | sort
 )
+
+# sanitize TEXT -> TEXT with tabs, CRs and newlines collapsed to spaces.
+# Load-bearing, not cosmetic: a raw TAB in aiTitle shifts every later TSV column.
+sanitize() { printf '%s' "$1" | tr '\t\n\r' '   '; }
+
+# valid_choice VALUE CSV -> 0 if VALUE is a member of the comma-separated CSV.
+# Commas around both sides make prefix matches ("opu") and injected lists
+# ("sonnet,haiku") fail, and an empty VALUE fails because CSV has no empty member.
+valid_choice() {
+  case ",$2," in
+    *",$1,"*) return 0 ;;
+    *)        return 1 ;;
+  esac
+}
 
 # bridge_id SESSION_JSON -> the RC bridgeSessionId ("" if file/field absent).
 # claude writes ~/.claude/sessions/<pid>.json once it registers remote control.
@@ -85,6 +105,17 @@ stitch3() {
 
 # ---------- selftest ----------
 
+# expect_rc CODE CMD... -> assert CMD exits with CODE, else fail the selftest.
+# The capture through `|| rc=$?` is mandatory: under `set -e` a bare failing
+# command aborts the script before any `[ "$?" -eq N ]` on the next line can run,
+# so the naive form silently exits 2 instead of asserting anything.
+expect_rc() {
+  local want=$1 rc=0
+  shift
+  "$@" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$want" ] || { echo "expect_rc FAIL: wanted $want, got $rc, from: $*"; exit 1; }
+}
+
 selftest() {
   local out t
   out=$(printf 'b\nc\n'    | mru_add a 5); [ "$out" = $'a\nb\nc' ] || { echo "mru_add basic FAIL: [$out]"; exit 1; }
@@ -94,9 +125,21 @@ selftest() {
   out=$(go_up /r/a/b /r);  [ "$out" = /r/a ] || { echo "go_up FAIL: [$out]"; exit 1; }
   out=$(go_up /r/a/b /r/); [ "$out" = /r/a ] || { echo "go_up trailing-slash FAIL: [$out]"; exit 1; }
   out=$(go_up /r /r);      [ "$out" = /r ]   || { echo "go_up root-clamp FAIL: [$out]"; exit 1; }
-  t=$(mktemp -d); mkdir -p "$t/x" "$t/y" "$t/.hidden" "$t/has space"; touch "$t/f"
+  t=$(mktemp -d); mkdir -p "$t/x" "$t/y" "$t/.hidden" "$t/has space" "$t/$(printf 'new\nline')"; touch "$t/f"
   out=$(list_subdirs "$t" | paste -sd,); rm -rf "$t"
-  [ "$out" = "has space,x,y" ] || { echo "list_subdirs FAIL: [$out]"; exit 1; }
+  [ "$out" = "has space,x,y" ] || { echo "list_subdirs newline-drop FAIL: [$out]"; exit 1; }
+  out=$(sanitize "$(printf 'a\tb\nc')")
+  [ "$out" = "a b c" ] || { echo "sanitize FAIL: [$out]"; exit 1; }
+  out=$(sanitize "plain")
+  [ "$out" = "plain" ] || { echo "sanitize passthrough FAIL: [$out]"; exit 1; }
+  valid_choice opus "$MODELS"    || { echo "valid_choice member FAIL"; exit 1; }
+  valid_choice fable "$MODELS"   || { echo "valid_choice last-member FAIL"; exit 1; }
+  valid_choice low "$EFFORTS"    || { echo "valid_choice first-member FAIL"; exit 1; }
+  ! valid_choice opu "$MODELS"   || { echo "valid_choice prefix FAIL"; exit 1; }
+  ! valid_choice "" "$MODELS"    || { echo "valid_choice empty FAIL"; exit 1; }
+  ! valid_choice sonnet,haiku "$MODELS" || { echo "valid_choice injection FAIL"; exit 1; }
+  expect_rc 0 true
+  expect_rc 3 bash -c 'exit 3'
   t=$(mktemp); printf '{"pid":1,"bridgeSessionId":"session_ABC123","x":2}' >"$t"
   out=$(bridge_id "$t"); rm -f "$t"
   [ "$out" = session_ABC123 ]      || { echo "bridge_id FAIL: [$out]"; exit 1; }
