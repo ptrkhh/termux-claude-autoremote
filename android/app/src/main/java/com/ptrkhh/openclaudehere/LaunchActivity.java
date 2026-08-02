@@ -94,6 +94,11 @@ public class LaunchActivity extends Activity {
     /** Non-null while a Browse view is on screen. */
     private String browsingAt;
 
+    /** True while the Resume session list owns folderList. Mirrors browsingAt: without
+     *  it, refresh() wipes the list, Back exits the activity, and a share changes the
+     *  selection invisibly underneath it. */
+    private boolean sessionsOpen;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -282,10 +287,10 @@ public class LaunchActivity extends Activity {
                     Toast.LENGTH_LONG).show();
             return;
         }
-        if (browsingAt != null) {
-            // Leave the Browse listing first: otherwise the selection changes
-            // invisibly underneath it, and "Open here" would overwrite the
-            // folder that was just shared.
+        if (browsingAt != null || sessionsOpen) {
+            // Leave the Browse listing or session list first: otherwise the
+            // selection changes invisibly underneath it, and "Open here" would
+            // overwrite the folder that was just shared.
             browsingAt = null;
             showFolders();
         }
@@ -305,21 +310,22 @@ public class LaunchActivity extends Activity {
         super.onResume();
         // Also covers returning from SetupActivity after the user fixed whatever
         // sent them there — without this the screen sits on "Loading…" forever.
-        // browsingAt guards a Browse view in progress: resuming from another app or
-        // dismissing a dialog must not silently replace it with the recents list.
-        if (!launching && browsingAt == null) {
+        // browsingAt guards a Browse view in progress, sessionsOpen a Resume session
+        // list: resuming from another app or dismissing a dialog must not silently
+        // replace either with the recents list.
+        if (!launching && browsingAt == null && !sessionsOpen) {
             refresh();
         }
     }
 
     /** Fires the gate + --state in one background round trip. */
     private void refresh() {
-        // A Browse view owns the folder list while it is up. fire()'s failure path
-        // calls refresh() unconditionally, and setBusy() below would wipe the
-        // listing while browsingAt stayed non-null — leaving the flag claiming a
-        // Browse view that is no longer on screen, which then makes onResume skip
-        // every future refresh.
-        if (browsingAt != null) {
+        // A Browse view or a Resume session list owns the folder list while it is
+        // up. fire()'s failure path calls refresh() unconditionally, and setBusy()
+        // below would wipe the listing while browsingAt/sessionsOpen stayed set —
+        // leaving the flag claiming a surface that is no longer on screen, which
+        // then makes onResume skip every future refresh.
+        if (browsingAt != null || sessionsOpen) {
             return;
         }
         setBusy("Loading…");
@@ -453,6 +459,7 @@ public class LaunchActivity extends Activity {
 
     /** Rebuilds the folder list. Task 12 adds the Browse rows, Task 14 adds Resume. */
     void showFolders() {
+        sessionsOpen = false;
         folderList.removeAllViews();
         Views.button(this, folderList, "🔁 Resume session…", new View.OnClickListener() {
             @Override public void onClick(View v) {
@@ -494,11 +501,15 @@ public class LaunchActivity extends Activity {
      * behind a retry loop that can never succeed.
      */
     private void loadSessions() {
+        sessionsOpen = true;
         setBusy("Loading sessions…");
         Setup.sessions(this, new Setup.ResultListener() {
             @Override public void onResult(int code, String stdout, String detail) {
                 if (dead || isFinishing()) {
                     return;
+                }
+                if (!sessionsOpen) {
+                    return;   // the user has already left the session list
                 }
                 switch (code) {
                     case Setup.OK:
@@ -519,14 +530,22 @@ public class LaunchActivity extends Activity {
                         route("Termux refused the command — finish setup, then fully close "
                                 + "and reopen Termux.");
                         return;
+                    case Setup.NONZERO:
+                        route("Launcher is out of date — run the step 2 command.");
+                        return;
                     default:
-                        // NONZERO or TIMEOUT: not necessarily version skew — a slow
-                        // device or a transient hiccup among ~100 spawned processes.
-                        // Offer a retry in place rather than routing to setup.
+                        // TIMEOUT: not necessarily version skew — a slow device or a
+                        // transient hiccup among ~100 spawned processes. Offer a
+                        // retry in place rather than routing to setup.
                         setBusy("Couldn’t load sessions — try again.");
                         Views.button(LaunchActivity.this, folderList, "Back", new View.OnClickListener() {
                             @Override public void onClick(View v) {
                                 showFolders();
+                            }
+                        });
+                        Views.button(LaunchActivity.this, folderList, "Open setup", new View.OnClickListener() {
+                            @Override public void onClick(View v) {
+                                startActivity(new Intent(LaunchActivity.this, SetupActivity.class));
                             }
                         });
                         return;
@@ -569,11 +588,14 @@ public class LaunchActivity extends Activity {
                     + (f[4].isEmpty() ? "" : " · " + f[4])
                     + "\n" + (f[5].isEmpty() ? "(untitled)" : f[5])
                     + (f[6].isEmpty() ? "" : "\n  ↳ " + f[6]);
-            Views.button(this, folderList, label, new View.OnClickListener() {
+            Button b = Views.button(this, folderList, label, new View.OnClickListener() {
                 @Override public void onClick(View v) {
                     pickSession(f[0], f[1], f[5]);
                 }
             });
+            b.setMaxLines(4);
+            b.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            b.setGravity(android.view.Gravity.START | android.view.Gravity.CENTER_VERTICAL);
         }
         if (seen == 0) {
             folderList.addView(Views.text(this, "No sessions to resume", 15, Views.GREY,
@@ -591,7 +613,7 @@ public class LaunchActivity extends Activity {
 
     private void pickSession(String sid, String cwd, String title) {
         resumeSid = sid;
-        resumeTitle = title.isEmpty() ? sid : title;
+        resumeTitle = title.isEmpty() ? "(untitled)" : title;
         selectedDir = cwd;
         setChipsEnabled(false);
         showFolders();
@@ -697,6 +719,10 @@ public class LaunchActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (sessionsOpen) {
+            showFolders();
+            return;
+        }
         if (browsingAt != null) {
             browsingAt = null;
             showFolders();
