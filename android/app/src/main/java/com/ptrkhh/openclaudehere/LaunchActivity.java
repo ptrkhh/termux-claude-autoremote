@@ -85,7 +85,6 @@ public class LaunchActivity extends Activity {
 
     /** Non-null while a Browse view is on screen. */
     private String browsingAt;
-    private String browsingRoot;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -280,6 +279,14 @@ public class LaunchActivity extends Activity {
 
     /** Fires the gate + --state in one background round trip. */
     private void refresh() {
+        // A Browse view owns the folder list while it is up. fire()'s failure path
+        // calls refresh() unconditionally, and setBusy() below would wipe the
+        // listing while browsingAt stayed non-null — leaving the flag claiming a
+        // Browse view that is no longer on screen, which then makes onResume skip
+        // every future refresh.
+        if (browsingAt != null) {
+            return;
+        }
         setBusy("Loading…");
         Setup.state(this, new Setup.ResultListener() {
             @Override public void onResult(int code, String stdout, String detail) {
@@ -447,7 +454,6 @@ public class LaunchActivity extends Activity {
      */
     private void browse(final String dir, final String root) {
         browsingAt = dir;
-        browsingRoot = root;
         setBusy("Reading " + dir + "…");
         Setup.ls(this, dir, new Setup.ResultListener() {
             @Override public void onResult(int code, String stdout, String detail) {
