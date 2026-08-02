@@ -184,6 +184,35 @@ selftest() {
   [ -z "$out" ] || { echo "--ls empty-dir FAIL: [$out]"; exit 1; }
   expect_rc 2 "$BASH" "$0" --ls
   rm -rf "$t"
+  t=$(mktemp -d); mkdir -p "$t/.claude/projects/p" "$t/proj"
+  printf '{"sessionId":"s1","project":"%s","timestamp":1700000000000,"display":"/resume"}\n' "$t/proj" >  "$t/.claude/history.jsonl"
+  printf '{"sessionId":"s1","project":"%s","timestamp":1700000001000,"display":"real work here"}\n' "$t/proj" >> "$t/.claude/history.jsonl"
+  printf '{"sessionId":"s1","project":"%s","timestamp":1700000002000,"display":"ok"}\n' "$t/proj" >> "$t/.claude/history.jsonl"
+  for _ in 1 2 3; do printf '{"type":"assistant"}\n' >> "$t/.claude/projects/p/s1.jsonl"; done
+  # `\\t` so the FILE contains the two-character JSON escape \t, not raw tab bytes.
+  # A literal tab inside a JSON string is invalid JSON and jq rejects the whole
+  # line (verified: "control characters from U+0000 through U+001F must be
+  # escaped"). Since the title lookup swallows jq errors with `2>/dev/null || true`,
+  # a raw tab would silently blank the title, fall back to the first prompt, and
+  # fail the cut -f6 assertion for a reason unrelated to the code under test.
+  # jq decodes \t back to a real tab on output, so this still exercises `sanitize`.
+  printf '{"type":"ai-title","aiTitle":"Title\\twith\\ttabs"}\n' >> "$t/.claude/projects/p/s1.jsonl"
+  out=$(HOME="$t" bash "$0" --sessions)
+  [ "$(printf '%s\n' "$out" | wc -l)" -eq 1 ] || { echo "--sessions row count FAIL: [$out]"; exit 1; }
+  [ "$(printf '%s' "$out" | awk -F'\t' '{print NF}')" -eq 7 ] || { echo "--sessions arity FAIL: [$out]"; exit 1; }
+  [ "$(printf '%s' "$out" | cut -f1)" = s1 ]      || { echo "--sessions sid FAIL"; exit 1; }
+  [ "$(printf '%s' "$out" | cut -f3)" = proj ]    || { echo "--sessions folder FAIL"; exit 1; }
+  [ "$(printf '%s' "$out" | cut -f6)" = "Title with tabs" ] || { echo "--sessions title sanitize FAIL: [$(printf '%s' "$out" | cut -f6)]"; exit 1; }
+  [ "$(printf '%s' "$out" | cut -f7)" = "real work here" ]  || { echo "--sessions summary FAIL: [$(printf '%s' "$out" | cut -f7)]"; exit 1; }
+  # a session below MIN_TURNS is not resumable
+  : > "$t/.claude/projects/p/s1.jsonl"; printf '{"type":"assistant"}\n' > "$t/.claude/projects/p/s1.jsonl"
+  out=$(HOME="$t" bash "$0" --sessions)
+  [ -z "$out" ] || { echo "--sessions MIN_TURNS FAIL: [$out]"; exit 1; }
+  # no history at all -> zero lines, exit 0
+  rm -f "$t/.claude/history.jsonl"
+  # shellcheck disable=SC2015  # intentional: a failing capture must also hit the FAIL branch
+  out=$(HOME="$t" bash "$0" --sessions) && [ -z "$out" ] || { echo "--sessions empty FAIL: [$out]"; exit 1; }
+  rm -rf "$t"
   echo "selftest OK"
 }
 
@@ -208,10 +237,12 @@ menu_index() {
     | jq -r 'if (.text // "") == "" or (.index // -1) < 0 then empty else (.index|tostring) end'
 }
 
-# list_sessions -> TAB-separated "ms_epoch<TAB>cwd<TAB>session_id", newest first,
-# up to 60 candidates. Source is ~/.claude/history.jsonl, grouped by sessionId.
-# pick_session filters these to the first 20 resumable ones (transcript exists +
-# >= MIN_TURNS assistant turns), so we hand over more than 20 here.
+# list_sessions -> TAB-separated "ms_epoch<TAB>cwd<TAB>session_id<TAB>prompts",
+# newest first, up to 60 candidates. Source is ~/.claude/history.jsonl, grouped by
+# sessionId. `prompts` is that session's display strings joined by ␟, carried
+# here so emit_sessions does not re-read history.jsonl once per row (up to 20 full
+# re-reads before this change). ␟ survives jq's @tsv unescaped; tabs and
+# newlines inside a prompt do not, which is what keeps the framing intact.
 # ponytail: history.jsonl is rotated/capped by claude (~300 lines), so a very
 # chatty session can push older ones out of this list. Fine for "recent"; fall
 # back to a projects/*/*.jsonl mtime scan only if a wanted session goes missing.
@@ -219,10 +250,46 @@ list_sessions() {
   [ -f "$HOME/.claude/history.jsonl" ] || return 0
   jq -rs '
     group_by(.sessionId)
-    | map({sid:.[0].sessionId, cwd:(map(.project)|last), ts:((map(.timestamp)|max) // 0)})
+    | map({sid:.[0].sessionId,
+           cwd:(map(.project)|last),
+           ts:((map(.timestamp)|max) // 0),
+           prompts:(map(.display // "" | gsub("\n";" ")))})
     | sort_by(-.ts) | .[0:60][]
-    | [(.ts|tostring), .cwd, .sid] | @tsv
+    | [(.ts|tostring), .cwd, .sid, (.prompts|join(""))] | @tsv
   ' "$HOME/.claude/history.jsonl"
+}
+
+# emit_sessions -> up to 20 resumable sessions as 7-column TSV:
+#   sid, cwd, folder, branch, when, title, summary
+# No header and no terminator: zero lines means "nothing to resume", and the app
+# distinguishes that from version skew by column count, not by a marker. (A
+# terminal marker cannot detect truncation anyway — Termux truncates the result
+# bundle from the start, so the last line is the one that always survives.)
+# Resumable = transcript exists and holds at least MIN_TURNS assistant turns.
+emit_sessions() {
+  local ts cwd sid prompts f title branch summary folder when lines kept=0
+  while IFS=$'\t' read -r ts cwd sid prompts; do
+    [ "$kept" -ge 20 ] && break
+    [ -d "$cwd" ] || continue
+    local -a matches=( "$HOME/.claude/projects/"*/"$sid.jsonl" )
+    f="${matches[0]}"; [ -e "$f" ] || continue        # transcript gone -> not resumable
+    # -m stops the read at MIN_TURNS matches instead of scanning a whole
+    # multi-megabyte transcript; -c then prints min(count, MIN_TURNS), so the
+    # -ge test below is unchanged.
+    [ "$(grep -c -m "$MIN_TURNS" '"type":"assistant"' "$f" 2>/dev/null || true)" -ge "$MIN_TURNS" ] || continue
+    title=$(grep -m1 '"type":"ai-title"' "$f" 2>/dev/null | jq -r '.aiTitle // empty' 2>/dev/null || true)
+    branch=$(grep -m1 '"gitBranch":"[^"]' "$f" 2>/dev/null | jq -r '.gitBranch // empty' 2>/dev/null || true)
+    [ "$branch" = HEAD ] && branch=""                 # detached / non-repo -> no useful label
+    lines="${prompts//$'\x1f'/$'\n'}"
+    summary=$(printf '%s\n' "$lines" | usable_prompts | stitch3)
+    [ -n "$title" ] || title=$(printf '%s\n' "$lines" | usable_prompts | head -1)
+    folder=$(basename "$cwd")
+    when=$(date -d "@$(( ts / 1000 ))" '+%m-%d %H:%M' 2>/dev/null || true)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$sid" "$cwd" "$(sanitize "$folder")" "$(sanitize "$branch")" \
+      "$when" "$(sanitize "$title")" "$(sanitize "$summary")"
+    kept=$((kept+1))
+  done < <(list_sessions)
 }
 
 # pick_session -> on a chosen session sets SID + DIR (caller's locals) and returns.
@@ -464,6 +531,7 @@ case "${1:-}" in
     fi
     list_subdirs "$1"
     ;;
+  --sessions) emit_sessions ;;
   --dir)
     shift
     PRESET_DIR="${1:-}"
