@@ -73,8 +73,8 @@ final class Setup {
 
     /**
      * Whether a package is installed. Android 11+ hides packages from this
-     * unless they are listed in the manifest's {@code <queries>} block — the
-     * three Termux apps are.
+     * unless they are listed in the manifest's {@code <queries>} block —
+     * Termux is.
      */
     static boolean installed(Context ctx, String pkg) {
         try {

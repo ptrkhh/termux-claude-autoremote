@@ -392,6 +392,27 @@ public class LaunchActivity extends Activity {
     }
 
     /**
+     * Renders a failure inside the Resume overlay. Deliberately never calls route():
+     * reaching the Resume row already proves --state passed its gate moments ago, so
+     * the "first failure jumps to setup" heuristic does not apply — and jumping would
+     * leave folderList empty while sessionsOpen stayed set, stranding the screen with
+     * no visible control at all.
+     */
+    private void sessionsError(String why) {
+        setBusy(why);
+        Views.button(this, folderList, "Back", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showFolders();
+            }
+        });
+        Views.button(this, folderList, "Open setup", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                startActivity(new Intent(LaunchActivity.this, SetupActivity.class));
+            }
+        });
+    }
+
+    /**
      * Parses tagged lines. Required tags are models, efforts and claude: a script
      * that has --state but predates a tag emits perfectly parseable output, so
      * "unparseable" cannot detect that kind of skew — a missing required tag can.
@@ -458,7 +479,7 @@ public class LaunchActivity extends Activity {
     }
 
     /** Rebuilds the folder list. Task 12 adds the Browse rows, Task 14 adds Resume. */
-    void showFolders() {
+    private void showFolders() {
         sessionsOpen = false;
         folderList.removeAllViews();
         Views.button(this, folderList, "🔁 Resume session…", new View.OnClickListener() {
@@ -486,7 +507,7 @@ public class LaunchActivity extends Activity {
         updateLaunchLabel();
     }
 
-    void setBusy(String message) {
+    private void setBusy(String message) {
         folderList.removeAllViews();
         // Text, not a bare spinner: a spinner announces nothing.
         folderList.addView(Views.text(this, message, 15, Views.GREY, Typeface.NORMAL));
@@ -516,7 +537,7 @@ public class LaunchActivity extends Activity {
                         showSessions(stdout);
                         return;
                     case Setup.NO_TERMUX:
-                        route("Termux isn’t installed — step 1.");
+                        sessionsError("Termux isn’t installed — step 1.");
                         return;
                     case Setup.NO_PERMISSION:
                         if (!permissionAsked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -527,27 +548,19 @@ public class LaunchActivity extends Activity {
                         }
                         return;
                     case Setup.REFUSED:
-                        route("Termux refused the command — finish setup, then fully close "
+                        sessionsError("Termux refused the command — finish setup, then fully close "
                                 + "and reopen Termux.");
                         return;
                     case Setup.NONZERO:
-                        route("Launcher is out of date — run the step 2 command.");
+                        sessionsError(detail == null || detail.isEmpty()
+                                ? "Launcher is out of date — run the step 2 command."
+                                : detail.trim());
                         return;
                     default:
                         // TIMEOUT: not necessarily version skew — a slow device or a
                         // transient hiccup among ~100 spawned processes. Offer a
                         // retry in place rather than routing to setup.
-                        setBusy("Couldn’t load sessions — try again.");
-                        Views.button(LaunchActivity.this, folderList, "Back", new View.OnClickListener() {
-                            @Override public void onClick(View v) {
-                                showFolders();
-                            }
-                        });
-                        Views.button(LaunchActivity.this, folderList, "Open setup", new View.OnClickListener() {
-                            @Override public void onClick(View v) {
-                                startActivity(new Intent(LaunchActivity.this, SetupActivity.class));
-                            }
-                        });
+                        sessionsError("Couldn’t load sessions — try again.");
                         return;
                 }
             }
@@ -601,7 +614,7 @@ public class LaunchActivity extends Activity {
             folderList.addView(Views.text(this, "No sessions to resume", 15, Views.GREY,
                     Typeface.NORMAL));
         } else if (kept == 0) {
-            route("Launcher is out of date — run the step 2 command.");
+            sessionsError("Launcher is out of date — run the step 2 command.");
             return;
         }
         Views.button(this, folderList, "Back", new View.OnClickListener() {
@@ -633,7 +646,7 @@ public class LaunchActivity extends Activity {
         }
     }
 
-    void select(String dir) {
+    private void select(String dir) {
         selectedDir = dir;
         // Picking a folder means starting fresh — a resume choice from a moment
         // ago must not silently survive underneath a new selection.
