@@ -39,6 +39,12 @@ public class LaunchActivity extends Activity {
     private static final String PREFS = "launch";
     private static final String KEY_MODEL = "model";
     private static final String KEY_EFFORT = "effort";
+    private static final String KEY_PERMISSION_ASKED = "permissionAsked";
+    private static final String KEY_FIRST_CHECK = "firstCheck";
+    private static final String KEY_USER_PICKED = "userPicked";
+    private static final String KEY_SELECTED_DIR = "selectedDir";
+    private static final String KEY_MODEL_SEL = "modelSel";
+    private static final String KEY_EFFORT_SEL = "effortSel";
 
     private LinearLayout folderList;
     private RadioGroup modelGroup;
@@ -120,14 +126,46 @@ public class LaunchActivity extends Activity {
         // Chips come from prefs, not from --state, so they are on screen before
         // any round trip. --state only supplies the *vocabulary*, reconciled below.
         SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
-        fillRadios(modelGroup, splitWords("opus sonnet haiku fable"), p.getString(KEY_MODEL, "opus"));
-        fillRadios(effortGroup, splitWords("low medium high xhigh max"), p.getString(KEY_EFFORT, "high"));
+        String initialModel = p.getString(KEY_MODEL, "opus");
+        String initialEffort = p.getString(KEY_EFFORT, "high");
+        if (savedInstanceState != null) {
+            permissionAsked = savedInstanceState.getBoolean(KEY_PERMISSION_ASKED);
+            firstCheck = savedInstanceState.getBoolean(KEY_FIRST_CHECK, true);
+            userPicked = savedInstanceState.getBoolean(KEY_USER_PICKED);
+            selectedDir = savedInstanceState.getString(KEY_SELECTED_DIR);
+            String m = savedInstanceState.getString(KEY_MODEL_SEL);
+            String e = savedInstanceState.getString(KEY_EFFORT_SEL);
+            if (m != null && !m.isEmpty()) {
+                initialModel = m;
+            }
+            if (e != null && !e.isEmpty()) {
+                initialEffort = e;
+            }
+        }
+        fillRadios(modelGroup, splitWords("opus sonnet haiku fable"), initialModel);
+        fillRadios(effortGroup, splitWords("low medium high xhigh max"), initialEffort);
 
-        String preset = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_DIR);
-        if (preset != null) {
-            select(preset);
+        if (savedInstanceState == null) {
+            String preset = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_DIR);
+            if (preset != null) {
+                select(preset);
+            }
         }
         updateLaunchLabel();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        // None of this is derivable after a config change: the folder came from a
+        // browse or a share, the chip may never have been written to prefs, and
+        // permissionAsked is what stops a redelivered denial raising a second dialog.
+        out.putBoolean(KEY_PERMISSION_ASKED, permissionAsked);
+        out.putBoolean(KEY_FIRST_CHECK, firstCheck);
+        out.putBoolean(KEY_USER_PICKED, userPicked);
+        out.putString(KEY_SELECTED_DIR, selectedDir);
+        out.putString(KEY_MODEL_SEL, checked(modelGroup));
+        out.putString(KEY_EFFORT_SEL, checked(effortGroup));
     }
 
     /** A horizontal RadioGroup — the default is vertical, which is not a chip row. */
@@ -280,7 +318,6 @@ public class LaunchActivity extends Activity {
     /** First failure jumps to setup; later failures stay here with a way in. */
     private void route(String why) {
         if (firstCheck) {
-            firstCheck = false;
             openSetup(why);
         } else {
             showError(why);
@@ -452,8 +489,8 @@ public class LaunchActivity extends Activity {
                     default:
                         // NONZERO foreground: bad folder, rejected model/effort.
                         launching = false;
-                        updateLaunchLabel();
                         selectedDir = null;
+                        updateLaunchLabel();
                         String msg = detail == null || detail.isEmpty()
                                 ? "Couldn’t start — check the folder still exists."
                                 : detail.trim();
@@ -467,16 +504,25 @@ public class LaunchActivity extends Activity {
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        if (requestCode == REQ_RUN_COMMAND) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                // onResume(), which Android calls right after this, covers the refresh.
-            } else {
-                showError("Termux’s “Run commands” permission is needed — open setup to grant it.");
-            }
+        if (requestCode != REQ_RUN_COMMAND) {
+            return;
         }
+        if (grantResults.length == 0) {
+            // Cancelled, not denied — Android does not count this toward
+            // don't-ask-again, so neither should we.
+            permissionAsked = false;
+            return;
+        }
+        if (grantResults[0] != PackageManager.PERMISSION_GRANTED) {
+            showError("Termux’s “Run commands” permission is needed — open setup to grant it.");
+        }
+        // Granted needs no action here: onResume re-runs refresh().
     }
 
     private void openSetup(String why) {
+        // Any jump to setup — automatic or from a failed launch — counts as the
+        // instance's one free jump.
+        firstCheck = false;
         Toast.makeText(this, why, Toast.LENGTH_LONG).show();
         startActivity(new Intent(this, SetupActivity.class));
     }
