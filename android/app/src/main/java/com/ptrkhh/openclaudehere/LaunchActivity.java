@@ -252,9 +252,25 @@ public class LaunchActivity extends Activity {
         super.onNewIntent(intent);
         setIntent(intent);   // without this getIntent() keeps returning the old one
         String dir = intent == null ? null : intent.getStringExtra(EXTRA_DIR);
-        if (dir != null) {
-            select(dir);
+        if (dir == null) {
+            return;
         }
+        if (launching) {
+            // This activity finishes when the in-flight launch succeeds, so the
+            // shared folder would vanish with no launch and no message. Say so
+            // rather than dropping it silently.
+            Toast.makeText(this, "A session is already starting — share again once it opens.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (browsingAt != null) {
+            // Leave the Browse listing first: otherwise the selection changes
+            // invisibly underneath it, and "Open here" would overwrite the
+            // folder that was just shared.
+            browsingAt = null;
+            showFolders();
+        }
+        select(dir);
     }
 
     @Override

@@ -41,9 +41,8 @@
 
         <!-- The share-sheet target. Its label is what shows in the Android
              "Share" menu: "Open Claude Code here". Translucent so it never shows
-             a screen; it finishes itself once the hand-off is done. (No
-             noHistory here — that can destroy the activity while the runtime
-             permission dialog is on screen.) -->
+             a screen; it resolves the shared file's folder, hands off to
+             LaunchActivity and finishes. -->
         <activity
             android:name=".ShareActivity"
             android:exported="true"
