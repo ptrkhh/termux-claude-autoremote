@@ -143,7 +143,7 @@ public class ShareActivity extends Activity {
     /** Shows why the hand-off failed and lands the user on the screen that fixes it. */
     private void openSetup(String why) {
         Toast.makeText(this, why, Toast.LENGTH_LONG).show();
-        startActivity(new Intent(this, MainActivity.class)
+        startActivity(new Intent(this, SetupActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         finish();
     }

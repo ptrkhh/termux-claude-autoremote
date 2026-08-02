@@ -8,6 +8,7 @@ import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -29,21 +30,22 @@ import java.util.List;
  *
  * <p>Built in code so the app ships no layout XML.
  */
-public class MainActivity extends Activity {
+public class SetupActivity extends Activity {
 
     private static final int REQ_RUN_COMMAND = 2;
 
-    /** Display name, package, F-Droid page — for the three apps step 1 needs. */
+    /** Display name, package, F-Droid page — the one app this setup still needs. */
     private static final String[][] TERMUX_APPS = {
             {"Termux", "com.termux", "https://f-droid.org/packages/com.termux/"},
-            {"Termux:API", "com.termux.api", "https://f-droid.org/packages/com.termux.api/"},
-            {"Termux:Widget", "com.termux.widget", "https://f-droid.org/packages/com.termux.widget/"},
     };
 
     private final List<AppRow> appRows = new ArrayList<>();
     private TextView permStatus;
     private TextView checkResult;
     private Button grant;
+
+    /** True once Android has recorded don't-ask-again for RUN_COMMAND. */
+    private boolean permanentlyDenied;
 
     /** One installable Termux app: its status line and its "get it" button. */
     private static final class AppRow {
@@ -77,8 +79,7 @@ public class MainActivity extends Activity {
 
         // ---- Step 1: Termux ----
         root.addView(Views.heading(this, "1  Install Termux"));
-        root.addView(Views.text(this, "All three, all from the same source — mixing F-Droid and GitHub "
-                + "builds breaks the plugins. Each button opens its F-Droid page.",
+        root.addView(Views.text(this, "Each button opens its F-Droid page.",
                 15, Views.GREY, Typeface.NORMAL));
         for (String[] app : TERMUX_APPS) {
             final String label = app[0];
@@ -106,8 +107,8 @@ public class MainActivity extends Activity {
 
         Views.button(this, root, "Copy & open Termux", new View.OnClickListener() {
             @Override public void onClick(View v) {
-                Setup.copySetupCommand(MainActivity.this);
-                if (Setup.openTermux(MainActivity.this)) {
+                Setup.copySetupCommand(SetupActivity.this);
+                if (Setup.openTermux(SetupActivity.this)) {
                     toast("Copied — long-press the terminal, tap Paste, then Enter");
                 } else {
                     toast("Copied. Termux isn’t installed yet (step 1).");
@@ -116,7 +117,7 @@ public class MainActivity extends Activity {
         });
         Views.button(this, root, "Copy command only", new View.OnClickListener() {
             @Override public void onClick(View v) {
-                Setup.copySetupCommand(MainActivity.this);
+                Setup.copySetupCommand(SetupActivity.this);
                 toast("Copied to clipboard");
             }
         });
@@ -128,7 +129,16 @@ public class MainActivity extends Activity {
         permStatus = statusLine(root);
         grant = Views.button(this, root, "Grant Termux “Run commands”", new View.OnClickListener() {
             @Override public void onClick(View v) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+                    return;
+                }
+                // Once Android records don't-ask-again, requestPermissions is a
+                // no-op forever — the old unconditional call left this button
+                // doing nothing visible with no way out.
+                if (permanentlyDenied) {
+                    startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.fromParts("package", getPackageName(), null)));
+                } else {
                     requestPermissions(new String[]{Setup.PERM_RUN_COMMAND}, REQ_RUN_COMMAND);
                 }
             }
@@ -141,7 +151,7 @@ public class MainActivity extends Activity {
             @Override public void onClick(View v) {
                 checkResult.setTextColor(Views.GREY);
                 checkResult.setText("Asking Termux…");
-                Setup.state(MainActivity.this, new Setup.ResultListener() {
+                Setup.state(SetupActivity.this, new Setup.ResultListener() {
                     @Override public void onResult(int code, String stdout, String detail) {
                         showCheck(code);
                     }
@@ -149,13 +159,6 @@ public class MainActivity extends Activity {
             }
         });
         root.addView(checkResult);
-
-        // The app is the guided installer, so it has to name the last step too —
-        // otherwise someone finishes here with no way to start a session.
-        root.addView(Views.heading(this, "Last step — the homescreen shortcut"));
-        root.addView(Views.text(this, "Long-press your homescreen → Widgets → Termux:Widget → pick "
-                + "“Claude”. That shortcut is what starts a session; this app only adds "
-                + "the share-sheet entry.", 15, Views.GREY, Typeface.NORMAL));
 
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(Color.WHITE);
@@ -176,9 +179,15 @@ public class MainActivity extends Activity {
         if (requestCode == REQ_RUN_COMMAND) {
             boolean granted = grantResults.length > 0
                     && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (!granted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                // False *after a denial* means don't-ask-again. (It is also false
+                // before the first request, which is why this is only read here.)
+                permanentlyDenied = !shouldShowRequestPermissionRationale(Setup.PERM_RUN_COMMAND);
+            }
             if (!granted) {
-                toast("Denied. If no dialog appeared, grant it in "
-                        + "Settings → Apps → Open Claude Code Here → Permissions.");
+                toast(permanentlyDenied
+                        ? "Denied permanently. Open app settings → Permissions to grant it."
+                        : "Denied. Tap the button again to retry.");
             }
             refreshStatus();
         }
@@ -194,6 +203,7 @@ public class MainActivity extends Activity {
         boolean granted = Setup.permissionGranted(this);
         mark(permStatus, granted, "Permission granted", "Permission not granted yet");
         grant.setVisibility(granted ? View.GONE : View.VISIBLE);
+        grant.setText(permanentlyDenied ? "Open app settings" : "Grant Termux “Run commands”");
     }
 
     private void showCheck(int code) {

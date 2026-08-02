@@ -12,8 +12,6 @@
          that are actually there. -->
     <queries>
         <package android:name="com.termux" />
-        <package android:name="com.termux.api" />
-        <package android:name="com.termux.widget" />
     </queries>
 
     <application
@@ -26,7 +24,7 @@
              how to use it. Optional to the core feature, but makes the app
              findable and uninstallable from the drawer. -->
         <activity
-            android:name=".MainActivity"
+            android:name=".SetupActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
