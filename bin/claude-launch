@@ -177,6 +177,13 @@ selftest() {
   HOME="$t" "$BASH" "$0" --state >/dev/null
   [ "$(wc -l < "$t/.config/claude-launch/recents")" -eq 2 ] || { echo "state must not prune recents FAIL"; exit 1; }
   rm -rf "$t"
+  t=$(mktemp -d); mkdir -p "$t/alpha" "$t/beta" "$t/$(printf 'bad\nname')"; touch "$t/file"
+  out=$("$BASH" "$0" --ls "$t" | paste -sd,)
+  [ "$out" = "alpha,beta" ] || { echo "--ls FAIL: [$out]"; exit 1; }
+  out=$("$BASH" "$0" --ls "$t/alpha")
+  [ -z "$out" ] || { echo "--ls empty-dir FAIL: [$out]"; exit 1; }
+  expect_rc 2 "$BASH" "$0" --ls
+  rm -rf "$t"
   echo "selftest OK"
 }
 
@@ -449,6 +456,14 @@ main() {
 case "${1:-}" in
   --selftest) selftest ;;
   --state)    emit_state ;;
+  --ls)
+    shift
+    if [ -z "${1:-}" ]; then
+      echo "claude-launch: --ls requires a path" >&2
+      exit 2
+    fi
+    list_subdirs "$1"
+    ;;
   --dir)
     shift
     PRESET_DIR="${1:-}"
