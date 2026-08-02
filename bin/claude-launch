@@ -213,6 +213,29 @@ selftest() {
   out=$(HOME="$t" "$BASH" "$0" --sessions) || { echo "--sessions empty FAIL: capture failed"; exit 1; }
   [ -z "$out" ] || { echo "--sessions empty FAIL: [$out]"; exit 1; }
   rm -rf "$t"
+  t=$(mktemp -d); mkdir -p "$t/proj" "$t/.config/claude-launch"
+  out=$(CLAUDE_LAUNCH_DRYRUN=1 HOME="$t" "$BASH" "$0" --launch --dir "$t/proj" --model opus --effort high)
+  case "$out" in
+    "cd $t/proj && claude --model opus --effort high --dangerously-skip-permissions --remote-control "*) ;;
+    *) echo "--launch dryrun FAIL: [$out]"; exit 1 ;;
+  esac
+  out=$(CLAUDE_LAUNCH_DRYRUN=1 HOME="$t" "$BASH" "$0" --launch --dir "$t/proj" --resume abc123)
+  case "$out" in
+    "cd $t/proj && claude --resume abc123 --dangerously-skip-permissions --remote-control "*) ;;
+    *) echo "--launch resume dryrun FAIL: [$out]"; exit 1 ;;
+  esac
+  # DRYRUN must not mutate: no recents file, no ~/.claude.json
+  [ ! -e "$t/.config/claude-launch/recents" ] || { echo "--launch dryrun wrote recents FAIL"; exit 1; }
+  [ ! -e "$t/.claude.json" ]                  || { echo "--launch dryrun wrote claude.json FAIL"; exit 1; }
+  # grammar. expect_rc, not `cmd; [ "$?" -eq 2 ]` — see Task 1.
+  export CLAUDE_LAUNCH_DRYRUN=1
+  expect_rc 2 env HOME="$t" "$BASH" "$0" --launch --dir "$t/proj" --model gpt  --effort high
+  expect_rc 2 env HOME="$t" "$BASH" "$0" --launch --dir "$t/proj" --model opus --effort turbo
+  expect_rc 2 env HOME="$t" "$BASH" "$0" --launch --dir "$t/proj"
+  expect_rc 2 env HOME="$t" "$BASH" "$0" --launch --dir "$t/nope" --model opus --effort high
+  expect_rc 2 env HOME="$t" "$BASH" "$0" --launch --dir "$t/proj" --model opus --effort high --bogus x
+  unset CLAUDE_LAUNCH_DRYRUN
+  rm -rf "$t"
   echo "selftest OK"
 }
 
@@ -461,6 +484,73 @@ require_api() {
   exit 1
 }
 
+# launch -> validate, then hand the terminal to claude. Reads DIR/MODEL/EFFORT/SID
+# from the caller. Order matters: every check runs before trust_dir, because
+# trust_dir writes hasTrustDialogAccepted into ~/.claude.json for a caller-supplied
+# path, and that path now arrives from a client-side browse UI across a version
+# boundary.
+launch() {
+  if [ -z "$DIR" ] || [ ! -d "$DIR" ]; then
+    echo "claude-launch: not a directory: $DIR" >&2
+    exit 2
+  fi
+  # Deleting pick_model/pick_effort deleted the only thing that enforced this:
+  # those functions could not emit a non-member and exited 0 on empty.
+  if [ -z "$SID" ]; then
+    if ! valid_choice "$MODEL" "$MODELS"; then
+      echo "claude-launch: invalid --model '$MODEL' (want one of $MODELS)" >&2
+      exit 2
+    fi
+    if ! valid_choice "$EFFORT" "$EFFORTS"; then
+      echo "claude-launch: invalid --effort '$EFFORT' (want one of $EFFORTS)" >&2
+      exit 2
+    fi
+  fi
+  # ponytail: folder + HH:MM + animal codename makes each session easy to spot;
+  # collides only if two same-minute launches draw the same animal (~1/16).
+  local rc_name
+  rc_name="$(basename "$DIR") $(date +%H:%M) ${ANIMALS[RANDOM % ${#ANIMALS[@]}]}"
+  local -a cmd
+  if [ -n "$SID" ]; then
+    cmd=(claude --resume "$SID" --dangerously-skip-permissions --remote-control "$rc_name")
+  else
+    cmd=(claude --model "$MODEL" --effort "$EFFORT" --dangerously-skip-permissions --remote-control "$rc_name")
+  fi
+  # Exits before every mutation below, which is what makes the selftest safe to
+  # run against a real $HOME. It also means trust_dir and save_state have no
+  # automated coverage — see the spec's declared gap.
+  if [ -n "${CLAUDE_LAUNCH_DRYRUN:-}" ]; then
+    printf 'cd %q && %s\n' "$DIR" "${cmd[*]}"
+    exit 0
+  fi
+  if [ -z "$SID" ]; then          # resume carries its own model/effort + writes no state
+    prune_recents
+    save_state
+  fi
+  trust_dir "$DIR"
+  cd "$DIR"
+  # claude records its RC session at ~/.claude/sessions/<pid>.json once it
+  # registers; a background watcher reads bridgeSessionId there and deep-links
+  # into the app — `am start -d` cold-starts the app AND opens the exact thread.
+  # We exec claude so its pid == our shell pid ($$), naming the file.
+  # ponytail: no app pre-boot — `monkey`/activity-launch don't work under Termux,
+  # and the deep-link launches the app itself. Bump the wait if the RC handshake
+  # ever runs longer than 30s.
+  local sf="$HOME/.claude/sessions/$$.json"
+  (
+    bid=""
+    for _ in $(seq 1 60); do
+      bid=$(bridge_id "$sf")
+      if [ -n "$bid" ]; then
+        am start -a android.intent.action.VIEW -d "https://claude.ai/code/$bid" >/dev/null 2>&1 || true
+        break
+      fi
+      sleep 0.5
+    done
+  ) &
+  exec "${cmd[@]}"
+}
+
 main() {
   require_api
   # PRESET_DIR (set by `--dir`, e.g. from the "Open Claude Code here" share
@@ -532,6 +622,20 @@ case "${1:-}" in
     list_subdirs "$1"
     ;;
   --sessions) emit_sessions ;;
+  --launch)
+    shift
+    DIR=""; MODEL=""; EFFORT=""; SID=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --dir)    DIR="${2:-}";    [ -n "$DIR" ]    || { echo "claude-launch: --dir requires a path" >&2; exit 2; };    shift 2 ;;
+        --model)  MODEL="${2:-}";  [ -n "$MODEL" ]  || { echo "claude-launch: --model requires a value" >&2; exit 2; }; shift 2 ;;
+        --effort) EFFORT="${2:-}"; [ -n "$EFFORT" ] || { echo "claude-launch: --effort requires a value" >&2; exit 2; };shift 2 ;;
+        --resume) SID="${2:-}";    [ -n "$SID" ]    || { echo "claude-launch: --resume requires an id" >&2; exit 2; };  shift 2 ;;
+        *) echo "claude-launch: unknown --launch option '$1'" >&2; exit 2 ;;
+      esac
+    done
+    launch
+    ;;
   --dir)
     shift
     PRESET_DIR="${1:-}"
