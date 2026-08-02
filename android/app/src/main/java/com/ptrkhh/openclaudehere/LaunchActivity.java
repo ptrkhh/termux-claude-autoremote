@@ -9,6 +9,7 @@ import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
@@ -56,6 +57,22 @@ public class LaunchActivity extends Activity {
 
     /** Set in onDestroy. isFinishing() alone does not cover config-change destroys. */
     private boolean dead;
+
+    /** Ask for the runtime permission at most once per instance. Setup.run reports
+     *  NO_PERMISSION synchronously and onResume re-checks, so without this a single
+     *  denial immediately triggers a second dialog — and a second denial is what
+     *  makes Android record don't-ask-again permanently. */
+    private boolean permissionAsked;
+
+    /** Only the first failed check of an instance jumps to SetupActivity; later ones
+     *  render in place. Otherwise Back out of Setup bounces straight back into it. */
+    private boolean firstCheck = true;
+
+    /** True once the user has tapped a chip, as opposed to a chip merely being
+     *  pre-checked by fillRadios. Gates whether applyState trusts the checked chip
+     *  over the persisted preference, which may hold a value this build does not
+     *  hard-code. */
+    private boolean userPicked;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -129,7 +146,8 @@ public class LaunchActivity extends Activity {
     private HorizontalScrollView scrollRow(RadioGroup group) {
         HorizontalScrollView sv = new HorizontalScrollView(this);
         sv.setHorizontalScrollBarEnabled(false);
-        sv.addView(group);
+        sv.addView(group, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return sv;
     }
 
@@ -159,6 +177,7 @@ public class LaunchActivity extends Activity {
             b.setMinHeight(Views.dp(this, Views.TOUCH_TARGET_DP));
             b.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View v) {
+                    userPicked = true;
                     updateLaunchLabel();
                 }
             });
@@ -228,36 +247,54 @@ public class LaunchActivity extends Activity {
     private void onState(int code, String stdout) {
         switch (code) {
             case Setup.NO_TERMUX:
-                openSetup("Termux isn’t installed — step 1.");
+                route("Termux isn’t installed — step 1.");
                 return;
             case Setup.NO_PERMISSION:
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                if (!permissionAsked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    permissionAsked = true;
                     requestPermissions(new String[]{Setup.PERM_RUN_COMMAND}, REQ_RUN_COMMAND);
+                } else {
+                    showError("Termux’s “Run commands” permission is needed — open setup to grant it.");
                 }
                 return;
             case Setup.REFUSED:
-                openSetup("Termux refused the command — finish setup, then fully close "
+                route("Termux refused the command — finish setup, then fully close "
                         + "and reopen Termux.");
                 return;
             case Setup.NONZERO:
                 // gate: 1 stale, 2 absent, 126 not executable — all step 2.
-                openSetup("Couldn’t read launcher state — run the step 2 command.");
+                route("Couldn’t read launcher state — run the step 2 command.");
                 return;
             case Setup.TIMEOUT:
                 // Not an automatic jump: a slow device must not be told its
                 // working install is broken.
-                setBusy("Termux won’t take commands yet. Run the step 2 command, then "
+                showError("Termux won’t take commands yet. Run the step 2 command, then "
                         + "fully close Termux and reopen it.");
-                Views.button(this, folderList, "Open setup", new View.OnClickListener() {
-                    @Override public void onClick(View v) {
-                        startActivity(new Intent(LaunchActivity.this, SetupActivity.class));
-                    }
-                });
                 return;
             default:
                 break;
         }
         applyState(stdout);
+    }
+
+    /** First failure jumps to setup; later failures stay here with a way in. */
+    private void route(String why) {
+        if (firstCheck) {
+            firstCheck = false;
+            openSetup(why);
+        } else {
+            showError(why);
+        }
+    }
+
+    /** Renders a failure in place, with a manual route to setup. */
+    private void showError(String why) {
+        setBusy(why);
+        Views.button(this, folderList, "Open setup", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                startActivity(new Intent(LaunchActivity.this, SetupActivity.class));
+            }
+        });
     }
 
     /**
@@ -292,21 +329,15 @@ public class LaunchActivity extends Activity {
 
         if (models == null || models.isEmpty() || efforts == null || efforts.isEmpty()
                 || claude == null) {
-            openSetup("Launcher is out of date — run the step 2 command.");
+            route("Launcher is out of date — run the step 2 command.");
             return;
         }
 
         SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
-        // Prefer what the user has already tapped over the stored default — this
-        // call can land seconds after the chips became interactive.
-        String curModel = checked(modelGroup);
-        if (curModel.isEmpty()) {
-            curModel = p.getString(KEY_MODEL, models.get(0));
-        }
-        String curEffort = checked(effortGroup);
-        if (curEffort.isEmpty()) {
-            curEffort = p.getString(KEY_EFFORT, efforts.get(0));
-        }
+        // Prefer a chip the user actually tapped; otherwise restore from prefs, which
+        // may hold a value this build does not hard-code.
+        String curModel = userPicked ? checked(modelGroup) : p.getString(KEY_MODEL, models.get(0));
+        String curEffort = userPicked ? checked(effortGroup) : p.getString(KEY_EFFORT, efforts.get(0));
         fillRadios(modelGroup, models, curModel);
         fillRadios(effortGroup, efforts, curEffort);
 
@@ -399,22 +430,29 @@ public class LaunchActivity extends Activity {
                         break;
                     case Setup.NO_TERMUX:
                         launching = false;
+                        updateLaunchLabel();
                         openSetup("Termux isn’t installed — step 1.");
                         break;
                     case Setup.REFUSED:
                         launching = false;
+                        updateLaunchLabel();
                         openSetup("Termux refused the command — finish setup, then fully "
                                 + "close and reopen Termux.");
                         break;
                     case Setup.NO_PERMISSION:
                         launching = false;
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        updateLaunchLabel();
+                        if (!permissionAsked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            permissionAsked = true;
                             requestPermissions(new String[]{Setup.PERM_RUN_COMMAND}, REQ_RUN_COMMAND);
+                        } else {
+                            showError("Termux’s “Run commands” permission is needed — open setup to grant it.");
                         }
                         break;
                     default:
                         // NONZERO foreground: bad folder, rejected model/effort.
                         launching = false;
+                        updateLaunchLabel();
                         selectedDir = null;
                         String msg = detail == null || detail.isEmpty()
                                 ? "Couldn’t start — check the folder still exists."
@@ -431,9 +469,9 @@ public class LaunchActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         if (requestCode == REQ_RUN_COMMAND) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                refresh();
+                // onResume(), which Android calls right after this, covers the refresh.
             } else {
-                openSetup("Termux’s “Run commands” permission is needed — step 3.");
+                showError("Termux’s “Run commands” permission is needed — open setup to grant it.");
             }
         }
     }
