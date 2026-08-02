@@ -13,6 +13,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 
+import java.util.UUID;
+
 /**
  * Everything this app knows about Termux: where the launcher lives, how to ask
  * Termux to run it, and how to tell — precisely — which setup step is missing.
@@ -61,11 +63,13 @@ final class Setup {
     static final int NO_PERMISSION = 5;
 
     interface ResultListener {
-        void onResult(int code, String detail);
+        /**
+         * @param code   one of OK / NONZERO / REFUSED / TIMEOUT / NO_TERMUX / NO_PERMISSION
+         * @param stdout what the command wrote, "" when there was nothing or no bundle
+         * @param detail Termux's errmsg, or null
+         */
+        void onResult(int code, String stdout, String detail);
     }
-
-    /** Distinct request codes / actions so two in-flight calls can't collide. */
-    private static int callSeq = 0;
 
     /**
      * Whether a package is installed. Android 11+ hides packages from this
@@ -108,25 +112,51 @@ final class Setup {
         return true;
     }
 
-    /**
-     * Asks Termux to run {@code ~/bin/claude-launch --dir <dir>} in a foreground
-     * terminal session. Errors (bad path, allow-external-apps off) come back
-     * within a second or two; success does not come back until Claude Code
-     * itself exits, so callers should treat a timeout as "looks fine".
-     */
-    static void launchClaude(Context ctx, String dir, long timeoutMs, ResultListener cb) {
-        run(ctx, CLAUDE_LAUNCH, new String[]{"--dir", dir}, dir, false, timeoutMs, cb);
-    }
+    /** Termux reports a foreground command only when it exits, so a timeout here means success. */
+    static final long ERROR_WINDOW_MS = 3000;
+    /** The read verbs return in milliseconds; this is today's probe() budget. */
+    static final long TIMEOUT_READ = 6000;
+    /** --sessions spawns ~100 short-lived processes on an ARM device. */
+    static final long TIMEOUT_SESSIONS = 12000;
 
     /**
-     * Runs {@code test -x ~/bin/claude-launch} in the background purely to find
-     * out how far setup got: {@link #OK} means everything is wired up,
-     * {@link #NONZERO} means Termux is reachable but install.sh hasn't run,
-     * {@link #REFUSED}/{@link #TIMEOUT} means Termux won't take commands yet.
+     * Reads the script before running it, so an old script can never raise a
+     * termux-dialog from a background command. Both paths are absolute:
+     * RUN_COMMAND_PATH goes straight to execve, and a tilde arriving as bash's
+     * $0 is never expanded (bash does tilde expansion before parameter
+     * expansion, on literal text only) — a tilde path makes grep exit 2, which
+     * this app reports as "script absent" on a perfectly healthy install.
+     *
+     * <p>Exit codes: 0 with state on stdout, 1 stale, 2 absent, 126 not
+     * executable. The grep short-circuits before exec, which is what makes this
+     * safe against arbitrarily old scripts. It proves the file exists, is
+     * runnable and mentions --state — not that it implements it; the caller's
+     * required-tag check closes that gap.
      */
-    static void probe(Context ctx, ResultListener cb) {
-        run(ctx, TERMUX_PREFIX + "/bin/test", new String[]{"-x", CLAUDE_LAUNCH},
-                TERMUX_HOME, true, 6000, cb);
+    static void state(Context ctx, ResultListener cb) {
+        run(ctx, TERMUX_PREFIX + "/bin/bash",
+                new String[]{"-c", "grep -q -- --state \"$0\" && exec \"$0\" --state", CLAUDE_LAUNCH},
+                TERMUX_HOME, true, TIMEOUT_READ, cb);
+    }
+
+    static void ls(Context ctx, String dir, ResultListener cb) {
+        run(ctx, CLAUDE_LAUNCH, new String[]{"--ls", dir}, TERMUX_HOME, true, TIMEOUT_READ, cb);
+    }
+
+    static void sessions(Context ctx, ResultListener cb) {
+        run(ctx, CLAUDE_LAUNCH, new String[]{"--sessions"}, TERMUX_HOME, true, TIMEOUT_SESSIONS, cb);
+    }
+
+    static void launch(Context ctx, String dir, String model, String effort, ResultListener cb) {
+        run(ctx, CLAUDE_LAUNCH,
+                new String[]{"--launch", "--dir", dir, "--model", model, "--effort", effort},
+                dir, false, ERROR_WINDOW_MS, cb);
+    }
+
+    static void resume(Context ctx, String dir, String sid, ResultListener cb) {
+        run(ctx, CLAUDE_LAUNCH,
+                new String[]{"--launch", "--dir", dir, "--resume", sid},
+                dir, false, ERROR_WINDOW_MS, cb);
     }
 
     /**
@@ -136,22 +166,34 @@ final class Setup {
     private static void run(Context ctx, String path, String[] args, String workdir,
                             boolean background, long timeoutMs, final ResultListener cb) {
         if (!termuxInstalled(ctx)) {
-            cb.onResult(NO_TERMUX, null);
+            cb.onResult(NO_TERMUX, "", null);
             return;
         }
         if (!permissionGranted(ctx)) {
-            cb.onResult(NO_PERMISSION, null);
+            cb.onResult(NO_PERMISSION, "", null);
             return;
         }
 
         final Context app = ctx.getApplicationContext();
         final Handler handler = new Handler(Looper.getMainLooper());
         final boolean[] answered = {false};
-        final String action = app.getPackageName() + ".RUN_RESULT." + (callSeq++);
+        // A per-call UUID, not a counter. `callSeq` was static, so it reset to 0
+        // on process death: after a --launch the app can be killed while claude
+        // runs for hours holding Termux's PendingIntent, and the next --state
+        // would rebuild a filterEquals-equal Intent with the same request code.
+        // FLAG_UPDATE_CURRENT then hands back the *stale* token, so when the old
+        // session finally exits its terminal transcript is delivered to the
+        // --state receiver — a bogus "re-run setup" on a healthy install, and it
+        // steals the real reply's answered[0] slot. A unique action makes the
+        // collision structurally impossible.
+        // FLAG_ONE_SHOT and pi.cancel() were considered and rejected: cancel()
+        // also runs on the 3s timeout path, destroying a token Termux still holds
+        // for a live session, and FLAG_ONE_SHOT contradicts FLAG_UPDATE_CURRENT.
+        final String action = app.getPackageName() + ".RUN_RESULT." + UUID.randomUUID();
 
         final BroadcastReceiver receiver = new BroadcastReceiver() {
             @Override public void onReceive(Context c, Intent intent) {
-                deliver(app, this, handler, answered, parse(intent), detail(intent), cb);
+                deliver(app, this, handler, answered, parse(intent), stdout(intent), detail(intent), cb);
             }
         };
         IntentFilter filter = new IntentFilter(action);
@@ -178,7 +220,7 @@ final class Setup {
         }
         Intent resultIntent = new Intent(action).setPackage(app.getPackageName());
         intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT",
-                PendingIntent.getBroadcast(app, callSeq, resultIntent, flags));
+                PendingIntent.getBroadcast(app, action.hashCode(), resultIntent, flags));
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -187,20 +229,21 @@ final class Setup {
                 app.startService(intent);
             }
         } catch (Exception e) {
-            deliver(app, receiver, handler, answered, REFUSED, e.getMessage(), cb);
+            deliver(app, receiver, handler, answered, REFUSED, "", e.getMessage(), cb);
             return;
         }
 
         handler.postDelayed(new Runnable() {
             @Override public void run() {
-                deliver(app, receiver, handler, answered, TIMEOUT, null, cb);
+                deliver(app, receiver, handler, answered, TIMEOUT, "", null, cb);
             }
         }, timeoutMs);
     }
 
     /** First caller wins; unregisters the receiver and reports exactly once. */
     private static void deliver(Context app, BroadcastReceiver receiver, Handler handler,
-                                boolean[] answered, int code, String detail, ResultListener cb) {
+                                boolean[] answered, int code, String stdout, String detail,
+                                ResultListener cb) {
         if (answered[0]) {
             return;
         }
@@ -211,20 +254,36 @@ final class Setup {
         } catch (IllegalArgumentException ignored) {
             // already gone
         }
-        cb.onResult(code, detail);
+        cb.onResult(code, stdout, detail);
     }
 
-    /** Termux packs its outcome into a "result" bundle on the callback intent. */
+    /**
+     * Termux packs its outcome into a "result" bundle on the callback intent.
+     *
+     * <p>A null bundle is a <em>failure</em>, not success. It used to return OK,
+     * which was harmless only while stdout was discarded: once a caller reads
+     * stdout, "Termux answered with nothing" would render as a healthy-looking
+     * empty folder list with the loading row resolved and no message.
+     */
     private static int parse(Intent intent) {
         Bundle result = intent.getBundleExtra("result");
         if (result == null) {
-            return OK; // answered without detail — nothing to complain about
+            return NONZERO;
         }
         String err = result.getString("errmsg");
         if (err != null && !err.isEmpty()) {
             return REFUSED;
         }
         return result.getInt("exitCode", 0) == 0 ? OK : NONZERO;
+    }
+
+    private static String stdout(Intent intent) {
+        Bundle result = intent.getBundleExtra("result");
+        if (result == null) {
+            return "";
+        }
+        String out = result.getString("stdout");
+        return out == null ? "" : out;
     }
 
     private static String detail(Intent intent) {

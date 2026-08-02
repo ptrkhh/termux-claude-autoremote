@@ -141,8 +141,8 @@ public class MainActivity extends Activity {
             @Override public void onClick(View v) {
                 checkResult.setTextColor(Views.GREY);
                 checkResult.setText("Asking Termux…");
-                Setup.probe(MainActivity.this, new Setup.ResultListener() {
-                    @Override public void onResult(int code, String detail) {
+                Setup.state(MainActivity.this, new Setup.ResultListener() {
+                    @Override public void onResult(int code, String stdout, String detail) {
                         showCheck(code);
                     }
                 });

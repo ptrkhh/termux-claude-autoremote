@@ -27,9 +27,6 @@ public class ShareActivity extends Activity {
 
     private static final int REQ_RUN_COMMAND = 1;
 
-    /** Termux reports refusals within a second; success not until Claude exits. */
-    private static final long ERROR_WINDOW_MS = 3000;
-
     // Resolved between onCreate and the permission callback.
     private String pendingDir;
 
@@ -120,8 +117,8 @@ public class ShareActivity extends Activity {
      */
     private void launchClaude(final String dir) {
         Toast.makeText(this, "Claude → " + new File(dir).getName(), Toast.LENGTH_SHORT).show();
-        Setup.launchClaude(this, dir, ERROR_WINDOW_MS, new Setup.ResultListener() {
-            @Override public void onResult(int code, String detail) {
+        Setup.launch(this, dir, "opus", "high", new Setup.ResultListener() {
+            @Override public void onResult(int code, String stdout, String detail) {
                 switch (code) {
                     case Setup.NO_TERMUX:
                         openSetup("Termux isn’t installed — step 1.");
