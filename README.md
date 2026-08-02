@@ -1,19 +1,18 @@
 # Termux Claude Auto Remote
 
 Touch-first launcher for [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-on Android. Add it as a Termux:Widget homescreen shortcut, choose a working
-directory/model/effort from native dialogs, and it starts Claude Code in Remote
-Control mode before opening the matching conversation in the Claude app.
+on Android. Open the companion app, pick a working directory, model and effort,
+and it starts Claude Code in Remote Control mode before opening the matching
+conversation in the Claude app.
 
 It also provides a touch-friendly picker for recent Claude sessions, so they can
 be resumed without using the terminal's interactive `claude --resume` picker.
 
 ## Setup
 
-### Recommended — let the app walk you through it
-
 The companion app is the guided installer: it detects what's missing, links each
-piece, and verifies the result. Nothing to copy out of this page.
+piece, and verifies the result. Nothing to copy out of this page — and nothing
+else to install it with, either, since the app is what starts sessions now.
 
 **1.** Install `open-claude-code-here.apk` from the
 [latest release](https://github.com/ptrkhh/termux-claude-autoremote/releases/latest).
@@ -21,9 +20,9 @@ Your browser or file manager will ask you to allow installing unknown apps.
 
 **2.** Open **Open Claude Code Here** and work down its three steps:
 
-- **Install Termux** — Termux, Termux:API and Termux:Widget each get a status
-  line and a button straight to their F-Droid page. Installed ones show a ✓ and
-  their button disappears.
+- **Install Termux** — the one app this needs. A status line and a button go
+  straight to its F-Droid page; once installed it shows a ✓ and the button
+  disappears.
 - **Paste this into Termux** — tap **Copy & open Termux**, then long-press the
   terminal, tap Paste, and press Enter. That one command is the entire Termux
   side (see [what it does](#what-the-command-does)).
@@ -33,37 +32,38 @@ Your browser or file manager will ask you to allow installing unknown apps.
 **3.** Tap **Check setup**. It runs a command through Termux and names whichever
 step is still missing, so you never have to guess whether it worked.
 
-**4.** Long-press your homescreen → Widgets → Termux:Widget → pick **Claude**.
-
 Installing the app here also gets you the **Open Claude Code here** share-sheet
 entry described [below](#share-a-file-to-claude-open-claude-code-here).
 
-### Alternative — no APK
-
-Same result, minus the share-sheet entry and the guided checks.
-
-**1.** Install [Termux](https://f-droid.org/packages/com.termux/),
-[Termux:API](https://f-droid.org/packages/com.termux.api/) and
-[Termux:Widget](https://f-droid.org/packages/com.termux.widget/) — all three,
-all from the same source (F-Droid *or* GitHub; mixing them breaks the plugins).
-
-**2.** Open Termux and paste this:
-
-```sh
-pkg install -y curl && curl -fsSL https://github.com/ptrkhh/termux-claude-autoremote/releases/latest/download/install.sh | bash
-```
-
-**3.** Long-press your homescreen → Widgets → Termux:Widget → pick **Claude**.
-
 ### What the command does
 
-Both paths run the same one-liner. It installs the packages (`termux-api`, `jq`,
-`coreutils`), writes `~/bin/claude-launch` and `~/.shortcuts/Claude`, enables
-`allow-external-apps` for the share-sheet app, and prints a check of anything it
+The setup command is one line, run once from Termux. It installs the packages
+(`jq`, `coreutils`), writes `~/bin/claude-launch`, and enables
+`allow-external-apps` so the app can drive it, printing a check of anything it
 couldn't do for you. Re-running it is safe — that's also how you update.
 
 It's [`install.sh`](install.sh) in this repo, unmodified, so you can read it
 before piping it into a shell.
+
+### Upgrading from the widget flow
+
+Run the setup one-liner, then install the new APK from the
+[latest release](https://github.com/ptrkhh/termux-claude-autoremote/releases/latest).
+Order doesn't matter beyond this: the app is what starts sessions now, not a
+Termux:Widget shortcut.
+
+Once both halves are updated you can uninstall **Termux:API** and
+**Termux:Widget** — nothing uses them any more — along with the now-unused
+`termux-api` package (`pkg uninstall -y termux-api`), and remove the homescreen
+widget.
+
+Until the new APK is installed, the old one still works: `claude-launch` keeps
+`--dir` as a legacy alias, so the share sheet keeps launching sessions. It uses
+`opus`/`high` rather than the model and effort you used to pick, because the
+script cannot read the app's stored preferences.
+
+If the app still shows Termux:API and Termux:Widget install steps, it is the old
+version — install the latest APK.
 
 ### Claude Code
 
@@ -127,46 +127,28 @@ which needs root since `/system` is read-only.
 
 ## Use
 
-Tap the shortcut, then either:
-
-- start a new session by selecting a directory, model, and effort; or
-- choose **Resume session…** to reopen a recent Claude conversation.
+Open the app. Pick a folder — a recent one, a pinned one (Termux home, `~/git`,
+Android home, Android downloads), **Browse Termux**, **Browse Android**, or
+**Resume session…** to reopen a past conversation instead — then confirm the
+model and effort chips and tap **Launch**.
 
 The launcher remembers recently used directories. Use
 `~/bin/claude-launch --selftest` to run its built-in checks.
 
-### Picker style
-
-Lists are shown with Termux:API's `radio` dialog: a centred dialog that sizes
-itself to its content, so the whole list is visible on the first tap (select a
-row, tap **OK**).
-
-The alternative is `sheet`, which selects with a single tap but is an Android
-bottom sheet. Termux:API never sets its peek height or expanded state, so on
-some devices it opens as a collapsed sliver at the bottom edge showing only the
-first (often clipped) row until you swipe it up. If your device does not do
-that and you prefer the single tap, export the widget you want before launching
-— e.g. in `~/.shortcuts/Claude`:
-
-```sh
-export CLAUDE_LAUNCH_PICKER=sheet   # radio (default) | sheet | spinner
-```
-
 ## Share a file to Claude ("Open Claude Code here")
 
-A tiny companion app (`android/`) adds an **Open Claude Code here** entry to the
-Android share sheet. Share any file from a file explorer (Solid Explorer,
-MiXplorer, Files by Google, …), pick **Open Claude Code here**, and Claude Code
-launches with that file's folder as the working directory — skipping straight to
-the model/effort pickers and the usual Remote Control flow.
+The same companion app (`android/`) adds an **Open Claude Code here** entry to
+the Android share sheet. Share any file from a file explorer (Solid Explorer,
+MiXplorer, Files by Google, …), pick **Open Claude Code here**, and the launch
+screen opens with that file's folder preselected — confirm the model and effort
+chips and tap **Launch** as usual.
 
-Under the hood the app resolves the shared file's real folder and calls
-`~/bin/claude-launch --dir <folder>` through Termux's `RUN_COMMAND` service.
+Under the hood the app resolves the shared file's real folder, hands it to the
+launch screen, and on Launch calls `~/bin/claude-launch --launch --dir <folder>
+--model <model> --effort <effort>` through Termux's `RUN_COMMAND` service.
 
-If you followed the recommended setup above, this already works — the app you
-installed to run the setup *is* the share target. Coming from the no-APK path
-instead, install the APK and open it; only the permission step will be left,
-and **Check setup** will confirm it.
+This already works once you've completed [setup](#setup) above — the app you
+installed to run the setup *is* the share target.
 
 If you enabled `allow-external-apps` during this session, **fully close and
 reopen Termux** (swipe it from Recents, or *Exit* from its notification) before

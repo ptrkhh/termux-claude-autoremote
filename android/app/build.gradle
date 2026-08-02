@@ -13,8 +13,8 @@ android {
         // Bump versionCode on every released APK — Android treats an unchanged
         // code as the same build, so sideloading over an old install is not
         // reliably an upgrade. versionName tracks the release tag.
-        versionCode 2
-        versionName "1.2.0"
+        versionCode 3
+        versionName "2.0.0"
     }
 
     // The debug build is what gets sideloaded — signed with the standard debug
