@@ -197,7 +197,7 @@ selftest() {
   # fail the cut -f6 assertion for a reason unrelated to the code under test.
   # jq decodes \t back to a real tab on output, so this still exercises `sanitize`.
   printf '{"type":"ai-title","aiTitle":"Title\\twith\\ttabs"}\n' >> "$t/.claude/projects/p/s1.jsonl"
-  out=$(HOME="$t" bash "$0" --sessions)
+  out=$(HOME="$t" "$BASH" "$0" --sessions)
   [ "$(printf '%s\n' "$out" | wc -l)" -eq 1 ] || { echo "--sessions row count FAIL: [$out]"; exit 1; }
   [ "$(printf '%s' "$out" | awk -F'\t' '{print NF}')" -eq 7 ] || { echo "--sessions arity FAIL: [$out]"; exit 1; }
   [ "$(printf '%s' "$out" | cut -f1)" = s1 ]      || { echo "--sessions sid FAIL"; exit 1; }
@@ -206,12 +206,12 @@ selftest() {
   [ "$(printf '%s' "$out" | cut -f7)" = "real work here" ]  || { echo "--sessions summary FAIL: [$(printf '%s' "$out" | cut -f7)]"; exit 1; }
   # a session below MIN_TURNS is not resumable
   : > "$t/.claude/projects/p/s1.jsonl"; printf '{"type":"assistant"}\n' > "$t/.claude/projects/p/s1.jsonl"
-  out=$(HOME="$t" bash "$0" --sessions)
+  out=$(HOME="$t" "$BASH" "$0" --sessions)
   [ -z "$out" ] || { echo "--sessions MIN_TURNS FAIL: [$out]"; exit 1; }
   # no history at all -> zero lines, exit 0
   rm -f "$t/.claude/history.jsonl"
-  # shellcheck disable=SC2015  # intentional: a failing capture must also hit the FAIL branch
-  out=$(HOME="$t" bash "$0" --sessions) && [ -z "$out" ] || { echo "--sessions empty FAIL: [$out]"; exit 1; }
+  out=$(HOME="$t" "$BASH" "$0" --sessions) || { echo "--sessions empty FAIL: capture failed"; exit 1; }
+  [ -z "$out" ] || { echo "--sessions empty FAIL: [$out]"; exit 1; }
   rm -rf "$t"
   echo "selftest OK"
 }
@@ -302,7 +302,7 @@ emit_sessions() {
 pick_session() {
   local ts cwd sid f title branch prompts summary folder when l1 l2 l3 label idx l kept=0
   local -a LABELS=() SIDS=() CWDS=()
-  while IFS=$'\t' read -r ts cwd sid; do
+  while IFS=$'\t' read -r ts cwd sid prompts; do
     [ "$kept" -ge 20 ] && break
     [ -d "$cwd" ] || continue
     local -a matches=( "$HOME/.claude/projects/"*/"$sid.jsonl" )
