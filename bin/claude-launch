@@ -42,6 +42,10 @@ mru_add() {
 # Names containing a newline are dropped: newline frames the --ls wire format, so
 # such a name would reach the app as two rows that both fail [ -d ]. Newline-named
 # directories are legal on Android, so this is reachable, not theoretical.
+#
+# Tabs are deliberately NOT filtered here, unlike the paths emit_state drops: --ls is
+# one name per line, so a tab is not a framing hazard, and the folder stays browsable
+# and launchable — it simply never appears in recents.
 list_subdirs() (
   shopt -s nullglob
   local d name
@@ -194,6 +198,11 @@ selftest() {
   out=$(HOME="$t" "$BASH" "$0" --sessions) || { echo "--sessions empty FAIL: capture failed"; exit 1; }
   [ -z "$out" ] || { echo "--sessions empty FAIL: [$out]"; exit 1; }
   rm -rf "$t"
+  # a corrupt history.jsonl must fail loudly, not look like "no sessions"
+  t=$(mktemp -d); mkdir -p "$t/.claude/projects/p"
+  printf 'NOT JSON\n' > "$t/.claude/history.jsonl"
+  expect_rc 2 env HOME="$t" "$BASH" "$0" --sessions
+  rm -rf "$t"
   t=$(mktemp -d); mkdir -p "$t/proj" "$t/.config/claude-launch"
   out=$(CLAUDE_LAUNCH_DRYRUN=1 HOME="$t" "$BASH" "$0" --launch --dir "$t/proj" --model opus --effort high)
   case "$out" in
@@ -294,12 +303,22 @@ list_sessions() {
 # bundle from the start, so the last line is the one that always survives.)
 # Resumable = transcript exists and holds at least MIN_TURNS assistant turns.
 emit_sessions() {
-  local ts cwd sid prompts f title branch summary folder when lines kept=0
+  local ts cwd sid prompts f title branch summary folder when lines raw kept=0
+  # Capture rather than `done < <(list_sessions)`: process substitution discards the
+  # producer's exit status, so a jq failure (one truncated line in history.jsonl, or
+  # jq missing) would exit 0 with zero rows — which the app cannot tell apart from
+  # "nothing to resume". Fail loudly instead.
+  raw=$(list_sessions) || {
+    echo "claude-launch: couldn't read $HOME/.claude/history.jsonl (is jq installed?)" >&2
+    exit 2
+  }
+  [ -n "$raw" ] || return 0
   while IFS=$'\t' read -r ts cwd sid prompts; do
     [ "$kept" -ge 20 ] && break
     [ -d "$cwd" ] || continue
-    # same reasoning as emit_state: a TAB in cwd would shift every later column,
-    # and sanitizing it would yield a path that cannot be cd'd to.
+    # Belt-and-suspenders, NOT the same case as emit_state: jq's @tsv already escapes
+    # a raw tab in cwd to the two chars \t, which then fails [ -d "$cwd" ] above. Kept
+    # so the invariant is local to this loop rather than resting on jq's escaping.
     [ "$cwd" = "${cwd//$'\t'/}" ] || continue
     local -a matches=( "$HOME/.claude/projects/"*/"$sid.jsonl" )
     f="${matches[0]}"; [ -e "$f" ] || continue        # transcript gone -> not resumable
@@ -319,7 +338,7 @@ emit_sessions() {
       "$sid" "$cwd" "$(sanitize "$folder")" "$(sanitize "$branch")" \
       "$when" "$(sanitize "$title")" "$(sanitize "$summary")"
     kept=$((kept+1))
-  done < <(list_sessions)
+  done <<<"$raw"
 }
 
 # recents_shown -> existing recents not equal to a pinned dir, one per line
