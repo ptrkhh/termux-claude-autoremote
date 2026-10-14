@@ -1,3 +1,5 @@
+> **Deprecated.** This project moved to [claude-dashboard](https://github.com/ptrkhh/claude-dashboard). The repo is archived and will not change. Termux setup: [Android client](https://github.com/ptrkhh/claude-dashboard#android-client). Not carried over: the Android share-sheet entry point. Already installed? Nothing changes on your device.
+
 # Termux Claude Auto Remote
 
 Touch-first launcher for [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
